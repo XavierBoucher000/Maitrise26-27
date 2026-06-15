@@ -1,3 +1,3 @@
 from pathlib import Path
 
-print(Path.cwd())
+print("Chemin courant :", Path.cwd())
