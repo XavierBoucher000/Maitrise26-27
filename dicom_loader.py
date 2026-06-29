@@ -593,11 +593,10 @@ if __name__ == "__main__":
     default_path = (
         base
         / "2026-05__Studies"
-        / "WB"
         / "DOE^JOHN_ANON62096_NM_2026-05-21_082240_MN.LU177.POST.TRAITEMENT-EN_WB.RAPIDE_n"
     )
     if not default_path.exists():
-        default_path = base / "2026-05__Studies" / "WB"
+        default_path = base / "2026-05__Studies" 
     target_path = Path(sys.argv[1]) if len(sys.argv) > 1 else default_path
     target_path = target_path.expanduser().resolve()
 

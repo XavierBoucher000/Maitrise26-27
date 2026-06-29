@@ -9,7 +9,7 @@ from matplotlib.widgets import Slider
 # ----- Edit this path to quickly choose a series without passing an argument -----
 # Example: set to '2026-05__Studies/DOE^JOHN_ANON62096_CT_2026-05-20_082808_MN.LU177.POST.TRAITEMENT-EN_CT_n224__00'
 # Leave as empty string to require a command-line argument.
-DEFAULT_FOLDER = '2026-05__Studies/WB'
+DEFAULT_FOLDER = '2026-05__Studies'
 
 def find_dicom_files(folder):
     return sorted([p for p in Path(folder).rglob('*.dcm')])
