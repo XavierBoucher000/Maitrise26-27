@@ -1,6 +1,9 @@
 # Ignore local data folders
+data/
 2026-05__Studies/
+2026-05__Studiesv2/
 1j92g763g/
+*.dcm
 
 # Python
 __pycache__/

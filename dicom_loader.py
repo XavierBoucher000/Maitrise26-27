@@ -202,6 +202,7 @@ def load_dicom_file(path: Path, read_pixels: bool = True) -> Dict[str, Any]:
         "energy_window_lower_limit": energy_data["energy_window_lower_limit"],
         "energy_window_upper_limit": energy_data["energy_window_upper_limit"],
         "acquisition_time": getattr(ds, "AcquisitionTime", None),
+        "actual_frame_duration_ms": getattr(ds, "ActualFrameDuration", None),
         "study_date": getattr(ds, "StudyDate", None),
         "modality": getattr(ds, "Modality", None),
         "rows": getattr(ds, "Rows", None),

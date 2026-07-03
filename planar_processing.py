@@ -9,6 +9,7 @@ import dicom_loader
 
 
 ENERGY_ORDER = ["Lower Scatter", "Photopeak", "Upper Scatter", "Low Energy Scatter"]
+CAMERA_SENSITIVITY_CPS_PER_MBQ = 9.36
 
 
 def normalize_energy_label(label: Any) -> str:
@@ -165,6 +166,30 @@ def plot_counts_before_after(geometric_images: List[Dict[str, Any]], correction:
     plt.show()
 
 
+def acquisition_duration_seconds(images: List[Dict[str, Any]]) -> float:
+    for item in images:
+        duration_ms = item.get("actual_frame_duration_ms")
+        if duration_ms is None:
+            continue
+        try:
+            return float(duration_ms) / 1000.0
+        except (TypeError, ValueError):
+            continue
+    raise ValueError("ActualFrameDuration is required to convert planar counts to activity")
+
+
+def counts_to_activity_mbq(
+    counts: float,
+    duration_seconds: float,
+    sensitivity_cps_per_mbq: float = CAMERA_SENSITIVITY_CPS_PER_MBQ,
+) -> float:
+    if duration_seconds <= 0:
+        raise ValueError("duration_seconds must be positive")
+    if sensitivity_cps_per_mbq <= 0:
+        raise ValueError("sensitivity_cps_per_mbq must be positive")
+    return float(counts) / (float(sensitivity_cps_per_mbq) * float(duration_seconds))
+
+
 def run_planar_workflow(scan_dir: Path) -> None:
     images = dicom_loader.load_scan_directory(scan_dir)
     print(f"Loaded {len(images)} image frame(s) from {scan_dir.name}")
@@ -188,9 +213,113 @@ def run_planar_workflow(scan_dir: Path) -> None:
     plot_counts_before_after(geometric_images, correction)
 
 
+def run_planar_study_workflow(study_dir: Path) -> None:
+    scan_dirs = dicom_loader.find_scan_dirs(study_dir)
+    if not scan_dirs:
+        raise ValueError(f"No planar DICOM scan folders found in {study_dir}")
+
+    patient_scans = dicom_loader.load_patient_scans(study_dir)
+    print(f"Loaded {len(patient_scans['scans'])} planar acquisition(s) from {study_dir.name}")
+
+    for scan in patient_scans["scans"]:
+        images = scan["images"]
+        if not images:
+            continue
+        scan_title = scan["scan_name"]
+        print(f"\nPlanar acquisition: {scan_title}")
+        print(f"  frames: {len(images)}")
+        dicom_loader.plot_scan_images(images, title=f"{scan_title} - AP/PA")
+
+        geometric_images = geometric_mean_images(images)
+        print("  Geometric mean counts:")
+        for item in geometric_images:
+            print(f"    {item['energy_window']}: {item['pixel_sum']:.1f}")
+
+        if geometric_images:
+            dicom_loader.plot_scan_images(geometric_images, title=f"{scan_title} - moyenne géométrique")
+
+        try:
+            correction = apply_tew_correction(geometric_images)
+        except ValueError as exc:
+            print(f"  TEW correction skipped: {exc}")
+            continue
+
+        print(f"  TEW scatter estimate: {correction['scatter_counts']:.1f}")
+        print(f"  TEW corrected photopeak: {correction['corrected_counts']:.1f}")
+        dicom_loader.plot_scan_images(
+            [correction["scatter_image"], correction["corrected_image"]],
+            title=f"{scan_title} - correction TEW",
+        )
+        plot_counts_before_after(geometric_images, correction)
+
+    if patient_scans["scans"]:
+        dicom_loader.plot_summary_grid(patient_scans)
+        dicom_loader.plot_decay_curve(patient_scans)
+
+
+def planar_tew_decay_data(study_dir: Path) -> List[Dict[str, Any]]:
+    """Return per-acquisition planar TEW data without plotting.
+
+    This is the numeric API used by comparison scripts. It keeps planar loading,
+    geometric mean, and TEW correction inside this module.
+    """
+    patient_scans = dicom_loader.load_patient_scans(study_dir)
+    rows = []
+    for scan in patient_scans["scans"]:
+        images = scan["images"]
+        if not images:
+            continue
+
+        geometric_images = geometric_mean_images(images)
+        correction = apply_tew_correction(geometric_images)
+        duration_seconds = acquisition_duration_seconds(images)
+        planar_activity_mbq = counts_to_activity_mbq(correction["corrected_counts"], duration_seconds)
+        scan_collection = {
+            "patient_path": patient_scans["patient_path"],
+            "patient_id": patient_scans["patient_id"],
+            "scans": [scan],
+        }
+        day_offset = dicom_loader.scan_day_offsets(scan_collection, [scan["scan_name"]])[0]
+        scan_datetime = dicom_loader.scan_datetime(scan)
+        rows.append(
+            {
+                "label": scan["scan_name"],
+                "datetime": scan_datetime,
+                "day_offset": day_offset,
+                "photopeak_counts": correction["counts"].get("Photopeak", 0.0),
+                "scatter_counts": correction["scatter_counts"],
+                "tew_corrected_counts": correction["corrected_counts"],
+                "tew_corrected_cps": correction["corrected_counts"] / duration_seconds,
+                "duration_seconds": duration_seconds,
+                "planar_activity_mbq": planar_activity_mbq,
+                "sensitivity_cps_per_mbq": CAMERA_SENSITIVITY_CPS_PER_MBQ,
+            }
+        )
+
+    rows.sort(key=lambda row: (row["datetime"] is None, row["datetime"], row["label"]))
+    if rows:
+        first_datetime = next((row["datetime"] for row in rows if row["datetime"] is not None), None)
+        if first_datetime is not None:
+            for row in rows:
+                if row["datetime"] is not None:
+                    row["day_offset"] = (row["datetime"] - first_datetime).total_seconds() / 86400.0
+    return rows
+
+
+def default_planar_study_dir() -> Path:
+    return (
+        Path(__file__).resolve().parent
+        / "data"
+        / "2026-05_studies"
+        / "2026-05__Studies_WBP"
+    )
+
+
 def default_rapid_scan_dir() -> Path:
     return (
         Path(__file__).resolve().parent
-        / "2026-05__Studies"
-        / "DOE^JOHN_ANON62096_NM_2026-05-21_082240_MN.LU177.POST.TRAITEMENT-EN_WB.RAPIDE_n"
+        / "data"
+        / "2026-05_studies"
+        / "2026-05__Studies_WBP"
+        / "DOE^JOHN_ANON64926_NM_2026-05-21_082240_MN.LU177.POST.TRAITEMENT-EN_WB.RAPIDE_n8__00000"
     )
