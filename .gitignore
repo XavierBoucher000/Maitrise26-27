@@ -1,9 +1,15 @@
-# Ignore local data folders
-data/
-2026-05__Studies/
-2026-05__Studiesv2/
-1j92g763g/
+# Ignore local DICOM/data folders
+/Data/
+/data/
+/Data/2026-05_studies/2026-05__Studies/
+/Data/2026-05_studies/2026-05__Studies_WBP/
+/data/2026-05_studies/2026-05__Studies/
+/data/2026-05_studies/2026-05__Studies_WBP/
+/2026-05__Studies/
+/2026-05__Studiesv2/
+/1j92g763g/
 *.dcm
+*.DCM
 
 # Python
 __pycache__/
