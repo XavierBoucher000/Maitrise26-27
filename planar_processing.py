@@ -5,11 +5,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import correction_3DEW as c3
+import dead_time
 import dicom_loader
 
 
 ENERGY_ORDER = ["Lower Scatter", "Photopeak", "Upper Scatter", "Low Energy Scatter"]
 CAMERA_SENSITIVITY_CPS_PER_MBQ = 9.36
+APPLY_DEAD_TIME_CORRECTION = True
+DEAD_TIME_TAU_US = 0.632
+DEAD_TIME_WIDE_WINDOW_ENERGIES = ["Low Energy Scatter", "Lower Scatter", "Photopeak", "Upper Scatter"]
 
 
 def normalize_energy_label(label: Any) -> str:
@@ -134,9 +138,67 @@ def apply_tew_correction(geometric_images: List[Dict[str, Any]]) -> Dict[str, An
         "widths": widths,
         "scatter_counts": scatter_counts,
         "corrected_counts": corrected_counts,
+        "corrected_counts_before_dead_time": corrected_counts,
         "scatter_image": scatter_item,
         "corrected_image": corrected_item,
+        "dead_time": None,
     }
+
+
+def wide_spectrum_counts(geometric_images: List[Dict[str, Any]]) -> float:
+    counts = c3.extract_counts_from_images(geometric_images)
+    available = [
+        counts[energy]
+        for energy in DEAD_TIME_WIDE_WINDOW_ENERGIES
+        if energy in counts
+    ]
+    if not available:
+        raise ValueError("No energy windows available to estimate wide-spectrum count rate")
+    return float(sum(available))
+
+
+def apply_dead_time_to_tew_correction(
+    geometric_images: List[Dict[str, Any]],
+    correction: Dict[str, Any],
+    duration_seconds: float,
+    tau_us: float = DEAD_TIME_TAU_US,
+) -> Dict[str, Any]:
+    """Apply Frezza paralyzable dead-time correction to TEW-corrected primary counts."""
+    if not APPLY_DEAD_TIME_CORRECTION:
+        return correction
+
+    rpo_cps = float(correction["corrected_counts_before_dead_time"]) / duration_seconds
+    rwo_counts = wide_spectrum_counts(geometric_images)
+    rwo_cps = rwo_counts / duration_seconds
+    result = dead_time.correct_dead_time(
+        rpo_cps=rpo_cps,
+        rwo_cps=rwo_cps,
+        tau_us=tau_us,
+        calibration_factor_cps_per_mbq=CAMERA_SENSITIVITY_CPS_PER_MBQ,
+        image_primary=correction["corrected_image"]["image"],
+    )
+
+    corrected_image = correction["corrected_image"].copy()
+    corrected_image["image"] = result.corrected_image
+    corrected_image["pixel_sum"] = float(np.sum(result.corrected_image))
+    corrected_image["pixel_mean"] = float(np.mean(result.corrected_image))
+    corrected_image["energy_window_name"] = "TEW + dead-time corrected photopeak"
+
+    updated = correction.copy()
+    updated["corrected_counts"] = result.rpt_corrected_cps * duration_seconds
+    updated["corrected_image"] = corrected_image
+    updated["dead_time"] = {
+        "dtcf": result.dtcf,
+        "rpo_observed_cps": result.rpo_observed_cps,
+        "rpt_corrected_cps": result.rpt_corrected_cps,
+        "rwo_counts": rwo_counts,
+        "rwo_cps": rwo_cps,
+        "tau_us": tau_us,
+        "count_loss_fraction": result.count_loss_fraction,
+        "count_loss_percent": result.count_loss_percent,
+        "warnings": result.warnings,
+    }
+    return updated
 
 
 def plot_counts_before_after(geometric_images: List[Dict[str, Any]], correction: Dict[str, Any]) -> None:
@@ -203,8 +265,18 @@ def run_planar_workflow(scan_dir: Path) -> None:
     dicom_loader.plot_scan_images(geometric_images, title="Moyenne géométrique AP/PA")
 
     correction = apply_tew_correction(geometric_images)
+    duration_seconds = acquisition_duration_seconds(images)
+    correction = apply_dead_time_to_tew_correction(geometric_images, correction, duration_seconds)
     print(f"TEW scatter estimate: {correction['scatter_counts']:.1f}")
-    print(f"TEW corrected photopeak: {correction['corrected_counts']:.1f}")
+    print(f"TEW corrected photopeak before dead time: {correction['corrected_counts_before_dead_time']:.1f}")
+    print(f"TEW corrected photopeak after dead time: {correction['corrected_counts']:.1f}")
+    if correction["dead_time"] is not None:
+        dead_time_info = correction["dead_time"]
+        print(
+            f"Dead-time correction: DTCF={dead_time_info['dtcf']:.4f}, "
+            f"loss={dead_time_info['count_loss_percent']:.2f}%, "
+            f"RWo={dead_time_info['rwo_cps']:.1f} cps"
+        )
 
     dicom_loader.plot_scan_images(
         [correction["scatter_image"], correction["corrected_image"]],
@@ -240,12 +312,22 @@ def run_planar_study_workflow(study_dir: Path) -> None:
 
         try:
             correction = apply_tew_correction(geometric_images)
+            duration_seconds = acquisition_duration_seconds(images)
+            correction = apply_dead_time_to_tew_correction(geometric_images, correction, duration_seconds)
         except ValueError as exc:
             print(f"  TEW correction skipped: {exc}")
             continue
 
         print(f"  TEW scatter estimate: {correction['scatter_counts']:.1f}")
-        print(f"  TEW corrected photopeak: {correction['corrected_counts']:.1f}")
+        print(f"  TEW corrected photopeak before dead time: {correction['corrected_counts_before_dead_time']:.1f}")
+        print(f"  TEW corrected photopeak after dead time: {correction['corrected_counts']:.1f}")
+        if correction["dead_time"] is not None:
+            dead_time_info = correction["dead_time"]
+            print(
+                f"  Dead-time correction: DTCF={dead_time_info['dtcf']:.4f}, "
+                f"loss={dead_time_info['count_loss_percent']:.2f}%, "
+                f"RWo={dead_time_info['rwo_cps']:.1f} cps"
+            )
         dicom_loader.plot_scan_images(
             [correction["scatter_image"], correction["corrected_image"]],
             title=f"{scan_title} - correction TEW",
@@ -273,7 +355,9 @@ def planar_tew_decay_data(study_dir: Path) -> List[Dict[str, Any]]:
         geometric_images = geometric_mean_images(images)
         correction = apply_tew_correction(geometric_images)
         duration_seconds = acquisition_duration_seconds(images)
+        correction = apply_dead_time_to_tew_correction(geometric_images, correction, duration_seconds)
         planar_activity_mbq = counts_to_activity_mbq(correction["corrected_counts"], duration_seconds)
+        dead_time_info = correction["dead_time"] or {}
         scan_collection = {
             "patient_path": patient_scans["patient_path"],
             "patient_id": patient_scans["patient_id"],
@@ -289,10 +373,18 @@ def planar_tew_decay_data(study_dir: Path) -> List[Dict[str, Any]]:
                 "photopeak_counts": correction["counts"].get("Photopeak", 0.0),
                 "scatter_counts": correction["scatter_counts"],
                 "tew_corrected_counts": correction["corrected_counts"],
+                "tew_corrected_counts_before_dead_time": correction["corrected_counts_before_dead_time"],
                 "tew_corrected_cps": correction["corrected_counts"] / duration_seconds,
+                "tew_corrected_cps_before_dead_time": correction["corrected_counts_before_dead_time"] / duration_seconds,
                 "duration_seconds": duration_seconds,
                 "planar_activity_mbq": planar_activity_mbq,
                 "sensitivity_cps_per_mbq": CAMERA_SENSITIVITY_CPS_PER_MBQ,
+                "dead_time_applied": correction["dead_time"] is not None,
+                "dead_time_tau_us": dead_time_info.get("tau_us"),
+                "dead_time_dtcf": dead_time_info.get("dtcf", 1.0),
+                "dead_time_loss_percent": dead_time_info.get("count_loss_percent", 0.0),
+                "wide_spectrum_counts": dead_time_info.get("rwo_counts"),
+                "wide_spectrum_cps": dead_time_info.get("rwo_cps"),
             }
         )
 

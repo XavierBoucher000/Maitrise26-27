@@ -598,14 +598,25 @@ def legacy_1j92g763_planar_tew_decay_data(patient_planar_dir: Path) -> List[Dict
 
         geometric_images = planar_processing.geometric_mean_images(remapped_images)
         correction = planar_processing.apply_tew_correction(geometric_images)
+        duration_seconds = planar_processing.acquisition_duration_seconds(remapped_images)
+        correction = planar_processing.apply_dead_time_to_tew_correction(geometric_images, correction, duration_seconds)
         scan_datetime = parse_dicom_datetime(scan_dir)
         fallback_day = parse_day_from_legacy_scan_name(scan_dir)
+        dead_time_info = correction["dead_time"] or {}
         rows.append(
             {
                 "label": scan_dir.name,
                 "datetime": scan_datetime,
                 "fallback_day": fallback_day,
                 "tew_corrected_counts": correction["corrected_counts"],
+                "tew_corrected_counts_before_dead_time": correction["corrected_counts_before_dead_time"],
+                "tew_corrected_cps": correction["corrected_counts"] / duration_seconds,
+                "tew_corrected_cps_before_dead_time": correction["corrected_counts_before_dead_time"] / duration_seconds,
+                "duration_seconds": duration_seconds,
+                "planar_activity_mbq": planar_processing.counts_to_activity_mbq(correction["corrected_counts"], duration_seconds),
+                "dead_time_dtcf": dead_time_info.get("dtcf", 1.0),
+                "dead_time_loss_percent": dead_time_info.get("count_loss_percent", 0.0),
+                "wide_spectrum_cps": dead_time_info.get("rwo_cps"),
             }
         )
 
@@ -654,7 +665,14 @@ def plot_powerpoint_patient_4v6_planar_counts_bi_fit(root_dir: Path = PATIENT_4V
         ax.plot(fit_x, fit_y, linestyle="--", color=colors[label], linewidth=2.4, label=f"{label} biexponential fit")
         print(f"{label} 1j92g763 planar TEW counts:")
         for row in rows:
-            print(f"  day={row['day_offset']:.2f} | counts={row['tew_corrected_counts']:.1f} | label={row['label']}")
+            print(
+                f"  day={row['day_offset']:.2f} | "
+                f"before={row['tew_corrected_counts_before_dead_time']:.1f} | "
+                f"after={row['tew_corrected_counts']:.1f} | "
+                f"DTCF={row['dead_time_dtcf']:.4f} | "
+                f"loss={row['dead_time_loss_percent']:.2f}% | "
+                f"label={row['label']}"
+            )
 
     ax.set_xlabel("Time after first acquisition (days)")
     ax.set_ylabel("TEW-corrected counts")
