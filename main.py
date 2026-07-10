@@ -1,8 +1,28 @@
 import sys
+import time
 from pathlib import Path
+
+import matplotlib.pyplot as plt
 
 import planar_processing
 import qspect_processing
+
+AUTO_CLOSE_FIGURES = True
+AUTO_CLOSE_DELAY_SECONDS = 0.1
+
+
+def enable_auto_close_figures() -> None:
+    original_show = plt.show
+
+    def show_and_close(*args, **kwargs):
+        kwargs["block"] = False
+        original_show(*args, **kwargs)
+        for figure_number in plt.get_fignums():
+            plt.figure(figure_number).canvas.flush_events()
+        time.sleep(AUTO_CLOSE_DELAY_SECONDS)
+        plt.close("all")
+
+    plt.show = show_and_close
 
 
 def first_dicom_file(path: Path) -> Path | None:
@@ -29,6 +49,9 @@ def resolve_default_dataset(path: Path) -> Path:
 
 
 def main() -> None:
+    if AUTO_CLOSE_FIGURES:
+        enable_auto_close_figures()
+
     scan_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else planar_processing.default_planar_study_dir()
     scan_dir = resolve_default_dataset(scan_dir.expanduser().resolve())
     if not scan_dir.exists():
