@@ -12,7 +12,7 @@ import qspect_processing
 
 
 SELECTED_DAY = "Day0"
-OUTPUT_DIR = Path("fig")
+OUTPUT_DIR = Path("fig") / "imaging"
 OUTPUT_FILE = "planar_tew_corrected.png"
 QSPECT_CENTER_FILE = "qspect_center_slices.png"
 QSPECT_MAX_FILE = "qspect_max_slices.png"

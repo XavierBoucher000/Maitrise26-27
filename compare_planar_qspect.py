@@ -20,11 +20,13 @@ MAX_DECAY_CONSTANT = 100.0
 AUTO_CLOSE_FIGURES = True
 AUTO_CLOSE_DELAY_SECONDS = 0.1
 SAVE_FIT_FIGURE = True
-FIT_FIGURE_PATH = Path(__file__).resolve().parent / "fig" / "planar_qspect_retention_fits.png"
-ACTIVITY_FIT_FIGURE_PATH = Path(__file__).resolve().parent / "fig" / "planar_qspect_activity_fits.png"
-POWERPOINT_FIT_FIGURE_PATH = Path(__file__).resolve().parent / "fig" / "planar_qspect_activity_bi_fit_powerpoint.png"
-PLANAR_COUNTS_POWERPOINT_PATH = Path(__file__).resolve().parent / "fig" / "planar_counts_bi_fit_powerpoint.png"
-PATIENT_4V6_COUNTS_POWERPOINT_PATH = Path(__file__).resolve().parent / "fig" / "patient_4v6_planar_counts_bi_fit_powerpoint.png"
+FIG_ROOT = Path(__file__).resolve().parent / "fig"
+RETENTION_FIG_DIR = FIG_ROOT / "retention"
+FIT_FIGURE_PATH = RETENTION_FIG_DIR / "planar_qspect_retention_fits.png"
+ACTIVITY_FIT_FIGURE_PATH = RETENTION_FIG_DIR / "planar_qspect_activity_fits.png"
+POWERPOINT_FIT_FIGURE_PATH = RETENTION_FIG_DIR / "planar_qspect_activity_bi_fit_powerpoint.png"
+PLANAR_COUNTS_POWERPOINT_PATH = RETENTION_FIG_DIR / "planar_counts_bi_fit_powerpoint.png"
+PATIENT_4V6_COUNTS_POWERPOINT_PATH = RETENTION_FIG_DIR / "patient_4v6_planar_counts_bi_fit_powerpoint.png"
 PATIENT_4V6_ROOT = Path(__file__).resolve().parent / "Data" / "1j92g763g"
 
 

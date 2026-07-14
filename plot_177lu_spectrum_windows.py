@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parent
 DATA_PATH = ROOT / "Data" / "Lu177_approx_spectrum_from_image.csv"
-OUT_DIR = ROOT / "fig"
+OUT_DIR = ROOT / "fig" / "spectrum"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 NOISE_SEED = 177
 NOISE_LEVEL = 0.045

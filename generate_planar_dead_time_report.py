@@ -8,8 +8,9 @@ import planar_processing
 
 
 ROOT = Path(__file__).resolve().parent
-OUT_PATH = ROOT / "fig" / "planar_dead_time_correction_report.txt"
-DTCF_FIGURE_PATH = ROOT / "fig" / "planar_dead_time_dtcf_summary.png"
+OUT_DIR = ROOT / "fig" / "dead_time"
+OUT_PATH = OUT_DIR / "planar_dead_time_correction_report.txt"
+DTCF_FIGURE_PATH = OUT_DIR / "planar_dead_time_dtcf_summary.png"
 
 
 def fmt(value: Any, digits: int = 2, default: str = "n/a") -> str:

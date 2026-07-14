@@ -12,7 +12,7 @@
 *.DCM
 planar_qspect_ppt_figure.png
 planar_corrected_summed_figure.png
-/fig/*.png
+/fig/
 
 # Python
 __pycache__/
