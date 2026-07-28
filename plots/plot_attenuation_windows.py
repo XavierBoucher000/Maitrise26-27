@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 from typing import Any, Dict, List
 
 import matplotlib
@@ -6,12 +7,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import correction_3DEW as c3
 import dicom_loader
 import planar_processing
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = PROJECT_ROOT
 OUT_DIR = ROOT / "fig" / "attenuation"
 COUNTS_FIGURE_PATH = OUT_DIR / "raw_window_counts_by_day.png"
 COUNTS_ZOOM_FIGURE_PATH = OUT_DIR / "raw_window_counts_by_day_zoom_no_low_energy.png"

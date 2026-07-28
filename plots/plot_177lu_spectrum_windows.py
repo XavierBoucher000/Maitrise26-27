@@ -9,7 +9,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "Data" / "Lu177_approx_spectrum_from_image.csv"
 OUT_DIR = ROOT / "fig" / "spectrum"
 OUT_DIR.mkdir(parents=True, exist_ok=True)

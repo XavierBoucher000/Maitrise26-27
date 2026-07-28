@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -11,9 +12,20 @@ import dicom_loader
 
 ENERGY_ORDER = ["Lower Scatter", "Photopeak", "Upper Scatter", "Low Energy Scatter"]
 CAMERA_SENSITIVITY_CPS_PER_MBQ = 9.36
+DETECTOR_LONGITUDINAL_FOV_MM = 387.0
 APPLY_DEAD_TIME_CORRECTION = True
 DEAD_TIME_TAU_US = 0.632
 DEAD_TIME_WIDE_WINDOW_ENERGIES = ["Low Energy Scatter", "Lower Scatter", "Photopeak", "Upper Scatter"]
+
+
+@dataclass(frozen=True)
+class PlanarTiming:
+    actual_frame_duration_s: float
+    scan_velocity_mm_per_s: float
+    scan_length_mm: float
+    detector_longitudinal_fov_mm: float
+    scan_time_s: float
+    local_dwell_time_s: float
 
 
 def normalize_energy_label(label: Any) -> str:
@@ -240,6 +252,57 @@ def acquisition_duration_seconds(images: List[Dict[str, Any]]) -> float:
     raise ValueError("ActualFrameDuration is required to convert planar counts to activity")
 
 
+def planar_timing_from_dicom(
+    images: List[Dict[str, Any]],
+    detector_longitudinal_fov_mm: float = DETECTOR_LONGITUDINAL_FOV_MM,
+) -> PlanarTiming:
+    """Return explicit whole-body planar timing values.
+
+    The local dwell time is a physical hypothesis for applying a static
+    cps/MBq calibration factor to integrated WB scan counts. It assumes the
+    detector longitudinal field of view is aligned with the scan direction.
+    """
+    actual_frame_duration_s = acquisition_duration_seconds(images)
+    for item in images:
+        scan_length = item.get("scan_length")
+        scan_velocity = item.get("scan_velocity")
+        if scan_length is None or scan_velocity is None:
+            continue
+        try:
+            scan_length_float = float(scan_length)
+            scan_velocity_float = float(scan_velocity)
+        except (TypeError, ValueError):
+            continue
+        if scan_velocity_float <= 0:
+            raise ValueError("ScanVelocity must be positive to estimate WB scan timing")
+        if scan_length_float <= 0:
+            raise ValueError("ScanLength must be positive to estimate WB scan timing")
+        if detector_longitudinal_fov_mm <= 0:
+            raise ValueError("detector_longitudinal_fov_mm must be positive")
+
+        scan_time_s = scan_length_float / scan_velocity_float
+        local_dwell_time_s = detector_longitudinal_fov_mm / scan_velocity_float
+        if not (local_dwell_time_s < scan_time_s < actual_frame_duration_s):
+            raise ValueError(
+                "Unexpected WB timing relationship: expected "
+                "local_dwell_time_s < scan_time_s < actual_frame_duration_s, got "
+                f"{local_dwell_time_s:.3f} < {scan_time_s:.3f} < {actual_frame_duration_s:.3f}"
+            )
+        return PlanarTiming(
+            actual_frame_duration_s=actual_frame_duration_s,
+            scan_velocity_mm_per_s=scan_velocity_float,
+            scan_length_mm=scan_length_float,
+            detector_longitudinal_fov_mm=float(detector_longitudinal_fov_mm),
+            scan_time_s=scan_time_s,
+            local_dwell_time_s=local_dwell_time_s,
+        )
+    raise ValueError("ScanVelocity and ScanLength are required to estimate WB scan timing")
+
+
+def acquisition_scan_time_from_velocity_seconds(images: List[Dict[str, Any]]) -> float:
+    return planar_timing_from_dicom(images).scan_time_s
+
+
 def counts_to_activity_mbq(
     counts: float,
     duration_seconds: float,
@@ -354,10 +417,20 @@ def planar_tew_decay_data(study_dir: Path) -> List[Dict[str, Any]]:
 
         geometric_images = geometric_mean_images(images)
         correction = apply_tew_correction(geometric_images)
-        duration_seconds = acquisition_duration_seconds(images)
+        timing = planar_timing_from_dicom(images)
+        duration_seconds = timing.actual_frame_duration_s
         correction = apply_dead_time_to_tew_correction(geometric_images, correction, duration_seconds)
-        planar_activity_mbq = counts_to_activity_mbq(correction["corrected_counts"], duration_seconds)
+        total_window_counts = wide_spectrum_counts(geometric_images)
         dead_time_info = correction["dead_time"] or {}
+        dead_time_dtcf = dead_time_info.get("dtcf", 1.0)
+        photopeak_counts = correction["counts"].get("Photopeak", 0.0)
+        photopeak_counts_dead_time = photopeak_counts * dead_time_dtcf
+        total_window_counts_dead_time = total_window_counts * dead_time_dtcf
+        planar_photopeak_raw_activity_mbq = counts_to_activity_mbq(photopeak_counts_dead_time, duration_seconds)
+        planar_activity_mbq = counts_to_activity_mbq(correction["corrected_counts"], duration_seconds)
+        planar_total_window_activity_mbq = counts_to_activity_mbq(total_window_counts_dead_time, duration_seconds)
+        planar_tew_scan_velocity_activity_mbq = counts_to_activity_mbq(correction["corrected_counts"], timing.scan_time_s)
+        planar_tew_local_dwell_activity_mbq = counts_to_activity_mbq(correction["corrected_counts"], timing.local_dwell_time_s)
         scan_collection = {
             "patient_path": patient_scans["patient_path"],
             "patient_id": patient_scans["patient_id"],
@@ -370,14 +443,28 @@ def planar_tew_decay_data(study_dir: Path) -> List[Dict[str, Any]]:
                 "label": scan["scan_name"],
                 "datetime": scan_datetime,
                 "day_offset": day_offset,
-                "photopeak_counts": correction["counts"].get("Photopeak", 0.0),
+                "photopeak_counts": photopeak_counts,
+                "photopeak_counts_dead_time": photopeak_counts_dead_time,
+                "photopeak_cps_dead_time": photopeak_counts_dead_time / duration_seconds,
                 "scatter_counts": correction["scatter_counts"],
                 "tew_corrected_counts": correction["corrected_counts"],
                 "tew_corrected_counts_before_dead_time": correction["corrected_counts_before_dead_time"],
                 "tew_corrected_cps": correction["corrected_counts"] / duration_seconds,
                 "tew_corrected_cps_before_dead_time": correction["corrected_counts_before_dead_time"] / duration_seconds,
+                "total_window_counts": total_window_counts,
+                "total_window_counts_dead_time": total_window_counts_dead_time,
+                "total_window_cps_dead_time": total_window_counts_dead_time / duration_seconds,
                 "duration_seconds": duration_seconds,
+                "scan_velocity_mm_per_s": timing.scan_velocity_mm_per_s,
+                "scan_length_mm": timing.scan_length_mm,
+                "detector_longitudinal_fov_mm": timing.detector_longitudinal_fov_mm,
+                "scan_time_from_velocity_seconds": timing.scan_time_s,
+                "local_dwell_time_seconds": timing.local_dwell_time_s,
+                "planar_photopeak_raw_activity_mbq": planar_photopeak_raw_activity_mbq,
                 "planar_activity_mbq": planar_activity_mbq,
+                "planar_tew_scan_velocity_activity_mbq": planar_tew_scan_velocity_activity_mbq,
+                "planar_tew_local_dwell_activity_mbq": planar_tew_local_dwell_activity_mbq,
+                "planar_total_window_activity_mbq": planar_total_window_activity_mbq,
                 "sensitivity_cps_per_mbq": CAMERA_SENSITIVITY_CPS_PER_MBQ,
                 "dead_time_applied": correction["dead_time"] is not None,
                 "dead_time_tau_us": dead_time_info.get("tau_us"),

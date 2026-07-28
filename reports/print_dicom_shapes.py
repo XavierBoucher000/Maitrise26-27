@@ -3,7 +3,7 @@ from pathlib import Path
 import pydicom
 
 
-ROOT = Path(__file__).resolve().parent / "2026-05__Studies"
+ROOT = Path(__file__).resolve().parents[1] / "data" / "2026-05_studies" / "2026-05__Studies"
 
 
 def main() -> None:
