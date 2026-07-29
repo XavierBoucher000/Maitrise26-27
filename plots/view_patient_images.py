@@ -18,7 +18,11 @@ import qspect_processing
 
 SELECTED_DAY = "Day0"
 OUTPUT_DIR = Path("fig") / "imaging"
+TEST_MATCH_DIR = OUTPUT_DIR / "test_match"
 OUTPUT_FILE = "planar_tew_corrected.png"
+PLANAR_QSPECT_LENGTH_FILE = "planar_tew_corrected_qspect_length.png"
+PLANAR_QSPECT_LENGTH_SIDE_BY_SIDE_FILE = "planar_qspect_length_side_by_side.png"
+PLANAR_QSPECT_CROP_SIDE_BY_SIDE_FILE = "planar_qspect_crop_side_by_side.png"
 QSPECT_CENTER_FILE = "qspect_center_slices.png"
 QSPECT_MAX_FILE = "qspect_max_slices.png"
 CT_CENTER_FILE = "ct_center_slices.png"
@@ -55,6 +59,7 @@ def load_planar_day(study_dir: Path, selected_day: str) -> Dict[str, Any]:
     by_energy = {item["energy_window"]: item for item in geometric_images}
     return {
         "scan_dir": scan_dir,
+        "images": images,
         "geometric_by_energy": by_energy,
         "correction": correction,
     }
@@ -206,6 +211,78 @@ def save_figure(fig: plt.Figure, output_file: Path) -> Path:
     return output_file
 
 
+def planar_pixel_spacing_mm(planar: Dict[str, Any]) -> float:
+    for item in planar["images"]:
+        pixel_spacing = item.get("pixel_spacing")
+        if pixel_spacing is not None and len(pixel_spacing) >= 1:
+            return float(pixel_spacing[0])
+    raise ValueError("Planar pixel spacing is required to draw Q/SPECT length")
+
+
+def qspect_head_to_toe_length_mm(qspect: Dict[str, Any]) -> float:
+    first_file = next(qspect["series_dir"].glob("*.dcm"), None)
+    if first_file is None:
+        raise ValueError(f"No Q/SPECT DICOM files found in {qspect['series_dir']}")
+    ds = pydicom.dcmread(first_file, stop_before_pixels=True, force=True)
+    slice_thickness = float(getattr(ds, "SliceThickness"))
+    return float(qspect["volume"].shape[0]) * slice_thickness
+
+
+def qspect_length_line_on_planar(
+    planar_image: np.ndarray,
+    planar: Dict[str, Any],
+    qspect: Dict[str, Any],
+) -> Dict[str, float]:
+    pixel_spacing_mm = planar_pixel_spacing_mm(planar)
+    qspect_length_mm = qspect_head_to_toe_length_mm(qspect)
+    qspect_length_pixels = qspect_length_mm / pixel_spacing_mm
+    y_center = (planar_image.shape[0] - 1) / 2.0
+    x_center = (planar_image.shape[1] - 1) / 2.0
+    y_top = y_center - qspect_length_pixels / 2.0
+    y_bottom = y_center + qspect_length_pixels / 2.0
+    return {
+        "pixel_spacing_mm": pixel_spacing_mm,
+        "qspect_length_mm": qspect_length_mm,
+        "qspect_length_pixels": qspect_length_pixels,
+        "x_center": x_center,
+        "y_center": y_center,
+        "y_top": y_top,
+        "y_bottom": y_bottom,
+    }
+
+
+def measure_signal_length_y(
+    image: np.ndarray,
+    spacing_y_mm: float,
+    threshold_fraction: float = 0.5,
+) -> Dict[str, float]:
+    finite_image = np.nan_to_num(np.asarray(image, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+    finite_image = np.clip(finite_image, 0.0, None)
+    profile = finite_image.mean(axis=1)
+    if profile.size == 0 or float(profile.max()) <= 0.0:
+        raise ValueError("Cannot measure Y length from an empty image profile")
+
+    normalized_profile = profile / float(profile.max())
+    mask = normalized_profile >= threshold_fraction
+    indices = np.where(mask)[0]
+    if indices.size == 0:
+        raise ValueError(f"No pixels above threshold fraction {threshold_fraction:g}")
+
+    y_top = int(indices[0])
+    y_bottom = int(indices[-1])
+    length_pixels = y_bottom - y_top + 1
+    masked_weights = profile[indices]
+    center_of_mass_y = float(np.average(indices, weights=masked_weights))
+    return {
+        "threshold_fraction": threshold_fraction,
+        "y_top": float(y_top),
+        "y_bottom": float(y_bottom),
+        "center_of_mass_y": center_of_mass_y,
+        "length_pixels": float(length_pixels),
+        "length_cm": float(length_pixels) * spacing_y_mm / 10.0,
+    }
+
+
 def make_planar_corrected_figure(
     planar_study_dir: Path = planar_processing.default_planar_study_dir(),
     selected_day: str = SELECTED_DAY,
@@ -218,6 +295,183 @@ def make_planar_corrected_figure(
     fig, ax = plt.subplots(figsize=(6.5, 6), facecolor="white")
     add_image_panel(ax, corrected, cmap="magma")
     fig.tight_layout(pad=0)
+    return save_figure(fig, output_file)
+
+
+def make_planar_qspect_length_figure(
+    planar_study_dir: Path = planar_processing.default_planar_study_dir(),
+    qspect_dir: Path = qspect_processing.default_qspect_dir(),
+    selected_day: str = SELECTED_DAY,
+    output_file: Path = OUTPUT_DIR / PLANAR_QSPECT_LENGTH_FILE,
+    qspect: Dict[str, Any] | None = None,
+) -> Path:
+    planar = load_planar_day(planar_study_dir, selected_day)
+    if qspect is None:
+        qspect = load_qspect_day(qspect_dir, selected_day)
+
+    corrected = planar["correction"]["corrected_image"]["image"]
+    line = qspect_length_line_on_planar(corrected, planar, qspect)
+
+    fig, ax = plt.subplots(figsize=(6.5, 6), facecolor="white")
+    vmin, vmax = display_limits(corrected)
+    ax.imshow(corrected, cmap="magma", vmin=vmin, vmax=vmax, aspect="auto")
+    ax.plot([line["x_center"], line["x_center"]], [line["y_top"], line["y_bottom"]], color="cyan", linewidth=2.5)
+    ax.plot(
+        [line["x_center"] - 10, line["x_center"] + 10],
+        [line["y_top"], line["y_top"]],
+        color="cyan",
+        linewidth=2.5,
+    )
+    ax.plot(
+        [line["x_center"] - 10, line["x_center"] + 10],
+        [line["y_bottom"], line["y_bottom"]],
+        color="cyan",
+        linewidth=2.5,
+    )
+    ax.axis("off")
+    fig.tight_layout(pad=0)
+
+    print(
+        "Q/SPECT centered planar line: "
+        f"length={line['qspect_length_mm'] / 10.0:.1f} cm, "
+        f"planar_pixels={line['qspect_length_pixels']:.1f}, "
+        f"y_top={line['y_top']:.1f}, y_bottom={line['y_bottom']:.1f}, x_center={line['x_center']:.1f}"
+    )
+    return save_figure(fig, output_file)
+
+
+def make_planar_qspect_length_side_by_side_figure(
+    planar_study_dir: Path = planar_processing.default_planar_study_dir(),
+    qspect_dir: Path = qspect_processing.default_qspect_dir(),
+    selected_day: str = SELECTED_DAY,
+    output_file: Path = TEST_MATCH_DIR / PLANAR_QSPECT_LENGTH_SIDE_BY_SIDE_FILE,
+    qspect: Dict[str, Any] | None = None,
+) -> Path:
+    planar = load_planar_day(planar_study_dir, selected_day)
+    if qspect is None:
+        qspect = load_qspect_day(qspect_dir, selected_day)
+
+    planar_image = planar["correction"]["corrected_image"]["image"]
+    line = qspect_length_line_on_planar(planar_image, planar, qspect)
+    planar_measurement = measure_signal_length_y(planar_image, line["pixel_spacing_mm"], threshold_fraction=0.1)
+    qspect_volume = qspect["volume"]
+    coronal_index = qspect_volume.shape[1] // 2
+    qspect_coronal = orient_qspect_display(qspect_volume[:, coronal_index, :])
+    qspect_spacing_y_mm = line["qspect_length_mm"] / qspect_coronal.shape[0]
+    qspect_measurement = measure_signal_length_y(qspect_coronal, qspect_spacing_y_mm, threshold_fraction=0.1)
+    matched_line_length_pixels = qspect_measurement["length_cm"] * 10.0 / line["pixel_spacing_mm"]
+    matched_line_center_y = planar_measurement["center_of_mass_y"]
+    matched_line_top = matched_line_center_y - matched_line_length_pixels / 2.0
+    matched_line_bottom = matched_line_center_y + matched_line_length_pixels / 2.0
+    qspect_gap_pixels = float(qspect_coronal.shape[0]) - qspect_measurement["length_pixels"]
+    qspect_gap_cm = qspect_gap_pixels * qspect_spacing_y_mm / 10.0
+    qspect_gap_planar_pixels = qspect_gap_cm * 10.0 / line["pixel_spacing_mm"]
+    adjusted_line_top = max(0.0, matched_line_top - qspect_gap_planar_pixels)
+    adjusted_line_bottom = min(float(planar_image.shape[0] - 1), matched_line_bottom)
+    adjusted_line_length_pixels = adjusted_line_bottom - adjusted_line_top + 1.0
+
+    fig, axes = plt.subplots(1, 2, figsize=(9, 5), facecolor="white")
+
+    vmin, vmax = display_limits(planar_image)
+    axes[0].imshow(planar_image, cmap="magma", vmin=vmin, vmax=vmax, aspect="auto")
+    axes[0].plot([line["x_center"], line["x_center"]], [adjusted_line_top, adjusted_line_bottom], color="cyan", linewidth=2.5)
+    axes[0].plot(
+        [line["x_center"] - 10, line["x_center"] + 10],
+        [adjusted_line_top, adjusted_line_top],
+        color="cyan",
+        linewidth=2.5,
+    )
+    axes[0].plot(
+        [line["x_center"] - 10, line["x_center"] + 10],
+        [adjusted_line_bottom, adjusted_line_bottom],
+        color="cyan",
+        linewidth=2.5,
+    )
+    axes[0].axhline(planar_measurement["y_top"], color="yellow", linewidth=1.6)
+    axes[0].axhline(planar_measurement["y_bottom"], color="yellow", linewidth=1.6)
+    axes[0].set_title("Planar WB")
+    axes[0].axis("off")
+
+    qmin, qmax = display_limits(qspect_coronal)
+    axes[1].imshow(qspect_coronal, cmap="magma", vmin=qmin, vmax=qmax, aspect="auto")
+    axes[1].axhline(qspect_measurement["y_top"], color="yellow", linewidth=1.6)
+    axes[1].axhline(qspect_measurement["y_bottom"], color="yellow", linewidth=1.6)
+    axes[1].set_title("Q/SPECT coronal center")
+    axes[1].axis("off")
+
+    fig.tight_layout(pad=0.4)
+    print(
+        "Threshold Y length at 0.1 mean-profile max: "
+        f"planar={planar_measurement['length_cm']:.1f} cm "
+        f"({planar_measurement['length_pixels']:.0f} px, y={planar_measurement['y_top']:.0f}-{planar_measurement['y_bottom']:.0f}, "
+        f"com_y={planar_measurement['center_of_mass_y']:.1f}), "
+        f"qspect={qspect_measurement['length_cm']:.1f} cm "
+        f"({qspect_measurement['length_pixels']:.0f} px, y={qspect_measurement['y_top']:.0f}-{qspect_measurement['y_bottom']:.0f}, "
+        f"com_y={qspect_measurement['center_of_mass_y']:.1f})"
+    )
+    print(
+        "Matched cyan planar line with Q/SPECT head-side gap added: "
+        f"qspect_gap={qspect_gap_cm:.1f} cm, "
+        f"length={adjusted_line_length_pixels * line['pixel_spacing_mm'] / 10.0:.1f} cm, "
+        f"planar_pixels={adjusted_line_length_pixels:.1f}, center_y={matched_line_center_y:.1f}, "
+        f"y_top={adjusted_line_top:.1f}, y_bottom={adjusted_line_bottom:.1f}"
+    )
+    return save_figure(fig, output_file)
+
+
+def make_planar_qspect_crop_side_by_side_figure(
+    planar_study_dir: Path = planar_processing.default_planar_study_dir(),
+    qspect_dir: Path = qspect_processing.default_qspect_dir(),
+    selected_day: str = SELECTED_DAY,
+    output_file: Path = TEST_MATCH_DIR / PLANAR_QSPECT_CROP_SIDE_BY_SIDE_FILE,
+    qspect: Dict[str, Any] | None = None,
+) -> Path:
+    planar = load_planar_day(planar_study_dir, selected_day)
+    if qspect is None:
+        qspect = load_qspect_day(qspect_dir, selected_day)
+
+    planar_image = planar["correction"]["corrected_image"]["image"]
+    line = qspect_length_line_on_planar(planar_image, planar, qspect)
+    planar_measurement = measure_signal_length_y(planar_image, line["pixel_spacing_mm"], threshold_fraction=0.1)
+    qspect_volume = qspect["volume"]
+    coronal_index = qspect_volume.shape[1] // 2
+    qspect_coronal = orient_qspect_display(qspect_volume[:, coronal_index, :])
+    qspect_spacing_y_mm = line["qspect_length_mm"] / qspect_coronal.shape[0]
+    qspect_measurement = measure_signal_length_y(qspect_coronal, qspect_spacing_y_mm, threshold_fraction=0.1)
+
+    matched_line_length_pixels = qspect_measurement["length_cm"] * 10.0 / line["pixel_spacing_mm"]
+    matched_line_center_y = planar_measurement["center_of_mass_y"]
+    matched_line_top = matched_line_center_y - matched_line_length_pixels / 2.0
+    matched_line_bottom = matched_line_center_y + matched_line_length_pixels / 2.0
+    qspect_gap_pixels = float(qspect_coronal.shape[0]) - qspect_measurement["length_pixels"]
+    qspect_gap_cm = qspect_gap_pixels * qspect_spacing_y_mm / 10.0
+    qspect_gap_planar_pixels = qspect_gap_cm * 10.0 / line["pixel_spacing_mm"]
+    adjusted_line_top = max(0.0, matched_line_top - qspect_gap_planar_pixels)
+    adjusted_line_bottom = min(float(planar_image.shape[0] - 1), matched_line_bottom)
+
+    crop_top = int(np.floor(adjusted_line_top))
+    crop_bottom = int(np.ceil(adjusted_line_bottom)) + 1
+    planar_crop = planar_image[crop_top:crop_bottom, :]
+
+    fig, axes = plt.subplots(1, 2, figsize=(8, 5), facecolor="white")
+    vmin, vmax = display_limits(planar_crop)
+    axes[0].imshow(planar_crop, cmap="magma", vmin=vmin, vmax=vmax, aspect="auto")
+    axes[0].set_title("Planar crop")
+    axes[0].axis("off")
+
+    qmin, qmax = display_limits(qspect_coronal)
+    axes[1].imshow(qspect_coronal, cmap="magma", vmin=qmin, vmax=qmax, aspect="auto")
+    axes[1].set_title("Q/SPECT coronal center")
+    axes[1].axis("off")
+    fig.tight_layout(pad=0.4)
+
+    print(
+        "Planar crop from adjusted cyan line: "
+        f"y={crop_top}-{crop_bottom - 1}, "
+        f"height={planar_crop.shape[0]} px, "
+        f"height={planar_crop.shape[0] * line['pixel_spacing_mm'] / 10.0:.1f} cm, "
+        f"counts={float(np.sum(planar_crop)):.1f}"
+    )
     return save_figure(fig, output_file)
 
 
@@ -292,6 +546,21 @@ def main() -> None:
         selected_day=selected_day,
         output_file=output_dir / f"{selected_day.lower()}_{OUTPUT_FILE}",
     )
+    saved_planar_qspect_length = make_planar_qspect_length_figure(
+        selected_day=selected_day,
+        output_file=TEST_MATCH_DIR / f"{selected_day.lower()}_{PLANAR_QSPECT_LENGTH_FILE}",
+        qspect=qspect,
+    )
+    saved_planar_qspect_side_by_side = make_planar_qspect_length_side_by_side_figure(
+        selected_day=selected_day,
+        output_file=TEST_MATCH_DIR / f"{selected_day.lower()}_{PLANAR_QSPECT_LENGTH_SIDE_BY_SIDE_FILE}",
+        qspect=qspect,
+    )
+    saved_planar_qspect_crop_side_by_side = make_planar_qspect_crop_side_by_side_figure(
+        selected_day=selected_day,
+        output_file=TEST_MATCH_DIR / f"{selected_day.lower()}_{PLANAR_QSPECT_CROP_SIDE_BY_SIDE_FILE}",
+        qspect=qspect,
+    )
     saved_qspect_center = make_qspect_slice_figure(
         selected_day=selected_day,
         mode="center",
@@ -311,6 +580,9 @@ def main() -> None:
         ct=ct,
     )
     print(f"Saved figure: {saved_planar}")
+    print(f"Saved figure: {saved_planar_qspect_length}")
+    print(f"Saved figure: {saved_planar_qspect_side_by_side}")
+    print(f"Saved figure: {saved_planar_qspect_crop_side_by_side}")
     print(f"Saved figure: {saved_qspect_center}")
     print(f"Saved figure: {saved_qspect_max}")
     print(f"Saved figure: {saved_ct_center}")
