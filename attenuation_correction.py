@@ -22,10 +22,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.ndimage import zoom
 
 import correction_3DEW as c3
+import ct_attenuation_correction as ctac
 import dicom_loader
+import planar_qspect_crop
 import planar_processing
 import qspect_processing
 from plots import view_patient_images
@@ -38,10 +39,20 @@ ATTENUATION_MODEL_FIGURE_PATH = ATTENUATION_MODEL_DIR / "one_patient_katt_leave_
 CT_CORRECTION_DIR = FIG_ROOT / "ct_correction"
 CT_CORRECTION_REPORT_PATH = CT_CORRECTION_DIR / "ct_attenuation_correction_report.txt"
 CT_CORRECTION_FIGURE_PATH = CT_CORRECTION_DIR / "ct_attenuation_correction_activity.png"
+CT_INDIVIDUAL_CROP_FIGURE_PATH = CT_CORRECTION_DIR / "ct_attenuation_correction_activity_individual_crop.png"
 CT_CORRECTION_MAP_FIGURE_PATH = CT_CORRECTION_DIR / "ct_attenuation_maps_day0.png"
-MU_WATER_208_CM_INV = 0.154
-CT_FACTOR_CLIP = (1.0, 20.0)
-PLANAR_QSPECT_CROP_THRESHOLD = 0.1
+CT_CROP_BY_DAY_DIR = CT_CORRECTION_DIR / "crops_by_day"
+CT_FIXED_CROP_BY_DAY_DIR = CT_CORRECTION_DIR / "crops_by_day_fixed_day0"
+CT_PROJECTION_QC_DIR = CT_CORRECTION_DIR / "ct_projection_qc"
+CT_PROJECTION_QC_REPORT_PATH = CT_PROJECTION_QC_DIR / "ct_factor_map_statistics.txt"
+CT_CROP_ALIGNMENT_REPORT_PATH = CT_CROP_BY_DAY_DIR / "crop_alignment_metrics.txt"
+CT_FIXED_CROP_ALIGNMENT_REPORT_PATH = CT_FIXED_CROP_BY_DAY_DIR / "crop_alignment_metrics.txt"
+CT_CROP_STRATEGY_REPORT_PATH = CT_CORRECTION_DIR / "ct_crop_strategy_comparison.txt"
+CT_CROP_STRATEGY_FIGURE_PATH = CT_CORRECTION_DIR / "ct_crop_strategy_comparison.png"
+CT_ACTIVITY_CROP_COMPARISON_FIGURE_PATH = CT_CORRECTION_FIGURE_PATH
+MU_WATER_208_CM_INV = ctac.MU_WATER_208_CM_INV
+CT_FACTOR_CLIP = ctac.CT_FACTOR_CLIP
+PLANAR_QSPECT_CROP_THRESHOLD = planar_qspect_crop.PLANAR_QSPECT_CROP_THRESHOLD
 CTAC_RELATIVE_METHOD_UNCERTAINTY = 0.25
 
 
@@ -536,104 +547,45 @@ def tew_geometric_mean_for_scan(scan: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def planar_crop_matching_qspect(
-    planar_image: np.ndarray,
-    planar_record: Dict[str, Any],
-    qspect: Dict[str, Any],
-    threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
-) -> Dict[str, Any]:
-    """Use the current imaging crop rule from plots/view_patient_images.py.
+def normalized_positive_image(image: np.ndarray) -> np.ndarray:
+    image = np.nan_to_num(np.asarray(image, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+    image = np.clip(image, 0.0, None)
+    maximum = float(image.max())
+    if maximum <= 0.0:
+        return image
+    return image / maximum
 
-    The crop is centered on the planar mean-profile center of mass, uses the
-    Q/SPECT thresholded coronal signal length, then adds the Q/SPECT head-side
-    gap to match the display logic used in the imaging test-match figures.
-    """
-    line = view_patient_images.qspect_length_line_on_planar(planar_image, planar_record, qspect)
-    planar_measurement = view_patient_images.measure_signal_length_y(
-        planar_image,
-        line["pixel_spacing_mm"],
-        threshold_fraction=threshold_fraction,
-    )
-    qspect_volume = qspect["volume"]
-    coronal_index = qspect_volume.shape[1] // 2
-    qspect_coronal = view_patient_images.orient_qspect_display(qspect_volume[:, coronal_index, :])
-    qspect_spacing_y_mm = line["qspect_length_mm"] / qspect_coronal.shape[0]
-    qspect_measurement = view_patient_images.measure_signal_length_y(
-        qspect_coronal,
-        qspect_spacing_y_mm,
-        threshold_fraction=threshold_fraction,
-    )
 
-    matched_length_px = qspect_measurement["length_cm"] * 10.0 / line["pixel_spacing_mm"]
-    matched_center_y = planar_measurement["center_of_mass_y"]
-    matched_top = matched_center_y - matched_length_px / 2.0
-    matched_bottom = matched_center_y + matched_length_px / 2.0
-    qspect_gap_px = float(qspect_coronal.shape[0]) - qspect_measurement["length_pixels"]
-    qspect_gap_cm = qspect_gap_px * qspect_spacing_y_mm / 10.0
-    qspect_gap_planar_px = qspect_gap_cm * 10.0 / line["pixel_spacing_mm"]
-    adjusted_top = max(0.0, matched_top - qspect_gap_planar_px)
-    adjusted_bottom = min(float(planar_image.shape[0] - 1), matched_bottom)
-    crop_top = int(np.floor(adjusted_top))
-    crop_bottom = int(np.ceil(adjusted_bottom)) + 1
-    crop = planar_image[crop_top:crop_bottom, :]
+def image_y_profile(image: np.ndarray) -> np.ndarray:
+    return normalized_positive_image(image).mean(axis=1)
 
+
+def weighted_center_of_mass_y(image: np.ndarray) -> float:
+    image = normalized_positive_image(image)
+    weights = image.sum(axis=1)
+    if float(weights.sum()) <= 0.0:
+        return np.nan
+    indices = np.arange(image.shape[0], dtype=np.float64)
+    return float(np.average(indices, weights=weights))
+
+
+def resized_image_correlation(reference: np.ndarray, moving: np.ndarray) -> float:
+    moving_resized = ctac.resize_map_to_image(moving, reference.shape)
+    reference_norm = normalized_positive_image(reference).ravel()
+    moving_norm = normalized_positive_image(moving_resized).ravel()
+    if float(np.std(reference_norm)) == 0.0 or float(np.std(moving_norm)) == 0.0:
+        return np.nan
+    return float(np.corrcoef(reference_norm, moving_norm)[0, 1])
+
+
+def qspect_coronal_projections(qspect: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    volume = np.asarray(qspect["volume"], dtype=np.float64)
+    center_index = volume.shape[1] // 2
     return {
-        "crop": crop,
-        "crop_top": crop_top,
-        "crop_bottom": crop_bottom,
-        "crop_height_cm": crop.shape[0] * line["pixel_spacing_mm"] / 10.0,
-        "line": line,
-        "planar_measurement": planar_measurement,
-        "qspect_measurement": qspect_measurement,
-        "qspect_coronal": qspect_coronal,
+        "center_slice": view_patient_images.orient_qspect_display(volume[:, center_index, :]),
+        "mean_projection": view_patient_images.orient_qspect_display(np.mean(volume, axis=1)),
+        "mip_projection": view_patient_images.orient_qspect_display(np.max(volume, axis=1)),
     }
-
-
-def hu_to_mu_208_cm_inv(
-    ct_hu: np.ndarray,
-    mu_water_208_cm_inv: float = MU_WATER_208_CM_INV,
-) -> np.ndarray:
-    """Approximate CT HU to linear attenuation coefficient at 208 keV.
-
-    This is a simple water-scaled baseline for method development, not a
-    scanner-specific bilinear calibration.
-    """
-    mu = mu_water_208_cm_inv * (1.0 + np.asarray(ct_hu, dtype=np.float64) / 1000.0)
-    return np.clip(mu, 0.0, None)
-
-
-def ct_attenuation_factor_map(
-    ct: Dict[str, Any],
-    mu_water_208_cm_inv: float = MU_WATER_208_CM_INV,
-    clip_range: Tuple[float, float] = CT_FACTOR_CLIP,
-) -> Dict[str, Any]:
-    volume_hu = np.asarray(ct["volume"], dtype=np.float64)
-    pixel_spacing = ct.get("pixel_spacing") or []
-    if len(pixel_spacing) < 1:
-        raise ValueError("CT PixelSpacing is required for attenuation-map integration")
-
-    ap_spacing_cm = float(pixel_spacing[0]) / 10.0
-    mu_208 = hu_to_mu_208_cm_inv(volume_hu, mu_water_208_cm_inv)
-    mu_integral = np.sum(mu_208, axis=1) * ap_spacing_cm
-    factor = np.exp(0.5 * mu_integral)
-    factor = np.clip(factor, clip_range[0], clip_range[1])
-    factor_display = view_patient_images.orient_qspect_display(factor)
-    return {
-        "factor_map": factor_display,
-        "mu_integral": view_patient_images.orient_qspect_display(mu_integral),
-        "ap_spacing_cm": ap_spacing_cm,
-        "mu_water_208_cm_inv": mu_water_208_cm_inv,
-        "clip_range": clip_range,
-    }
-
-
-def resize_map_to_image(image: np.ndarray, reference_shape: Tuple[int, int], order: int = 1) -> np.ndarray:
-    image = np.asarray(image, dtype=np.float64)
-    if image.ndim != 2:
-        raise ValueError("Only 2D maps can be resized to the planar crop")
-    factors = (reference_shape[0] / image.shape[0], reference_shape[1] / image.shape[1])
-    resized = zoom(image, factors, order=order)
-    return resized[: reference_shape[0], : reference_shape[1]]
 
 
 def ct_attenuation_correct_scan(
@@ -641,31 +593,40 @@ def ct_attenuation_correct_scan(
     qspect: Dict[str, Any],
     qspect_dir: Path,
     threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
+    fixed_crop_bounds: Optional[Tuple[int, int]] = None,
 ) -> Dict[str, Any]:
     planar_result = tew_geometric_mean_for_scan(scan)
     planar_record = {
         "images": scan["images"],
         "correction": {"corrected_image": {"image": planar_result["image"]}},
     }
-    crop_result = planar_crop_matching_qspect(
+    crop_result = planar_qspect_crop.compute_planar_crop_for_qspect(
         planar_result["image"],
         planar_record,
         qspect,
         threshold_fraction=threshold_fraction,
+        fixed_crop_bounds=fixed_crop_bounds,
     )
     ct = view_patient_images.load_ct_for_qspect_day(qspect_dir, qspect)
-    ct_map = ct_attenuation_factor_map(ct)
-    factor_resized = resize_map_to_image(ct_map["factor_map"], crop_result["crop"].shape)
-    corrected_crop = crop_result["crop"] * factor_resized
+    ct_correction = ctac.apply_ct_attenuation_correction_to_crop(crop_result["crop"], ct)
+    ct_projection_qc = ctac.ct_planar_equivalent_images(ct)
+    qspect_projections = qspect_coronal_projections(qspect)
     timing = planar_result["timing"]
     sensitivity = planar_processing.CAMERA_SENSITIVITY_CPS_PER_MBQ
-    before_counts = float(np.sum(crop_result["crop"]))
-    after_counts = float(np.sum(corrected_crop))
+    before_counts = ct_correction["planar_crop_counts"]
+    after_counts = ct_correction["ctac_crop_counts"]
     qspect_activity = None if qspect.get("total_activity_bq") is None else float(qspect["total_activity_bq"]) / 1e6
     before_activity = planar_processing.counts_to_activity_mbq(before_counts, timing.local_dwell_time_s, sensitivity)
     after_activity = planar_processing.counts_to_activity_mbq(after_counts, timing.local_dwell_time_s, sensitivity)
-    effective_factor = after_counts / before_counts if before_counts > 0 else np.nan
+    effective_factor = ct_correction["effective_ct_factor"]
     scan_datetime = dicom_loader.scan_datetime(scan)
+
+    print(
+        f"CTAC {qspect['label']} | "
+        f"C_eff={effective_factor:.3f} | "
+        f"before={before_activity:.1f} MBq | "
+        f"after={after_activity:.1f} MBq"
+    )
 
     return {
         "label": scan["scan_name"],
@@ -683,15 +644,26 @@ def ct_attenuation_correct_scan(
         "local_dwell_time_s": timing.local_dwell_time_s,
         "crop_top": crop_result["crop_top"],
         "crop_bottom": crop_result["crop_bottom"],
+        "dynamic_crop_top": crop_result["dynamic_crop_top"],
+        "dynamic_crop_bottom": crop_result["dynamic_crop_bottom"],
+        "crop_strategy": crop_result["crop_strategy"],
         "crop_height_cm": crop_result["crop_height_cm"],
         "ct_series_description": ct["series_description"],
         "ct_shape": tuple(ct["shape"]),
         "ct_pixel_spacing": ct["pixel_spacing"],
         "ct_slice_thickness": ct["slice_thickness"],
         "planar_crop": crop_result["crop"],
-        "ct_factor_resized": factor_resized,
-        "ctac_crop": corrected_crop,
+        "ct_factor_resized": ct_correction["ct_factor_resized"],
+        "ct_factor_map": ct_correction["ct_map"]["factor_map"],
+        "ct_mu_integral": ct_correction["ct_map"]["mu_integral"],
+        "ct_factor_stats": ct_correction["ct_factor_stats"],
+        "ct_coronal_center_hu": ct_projection_qc["coronal_center_hu"],
+        "ct_mean_projection_hu": ct_projection_qc["mean_projection_hu"],
+        "ctac_crop": ct_correction["ctac_crop"],
         "qspect_coronal": crop_result["qspect_coronal"],
+        "qspect_coronal_center": qspect_projections["center_slice"],
+        "qspect_coronal_mean_projection": qspect_projections["mean_projection"],
+        "qspect_coronal_mip_projection": qspect_projections["mip_projection"],
         "threshold_fraction": threshold_fraction,
     }
 
@@ -700,6 +672,7 @@ def ct_attenuation_correction_rows(
     planar_dir: Path = planar_processing.default_planar_study_dir(),
     qspect_dir: Path = qspect_processing.default_qspect_dir(),
     threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
+    crop_strategy: str = "individual",
 ) -> List[Dict[str, Any]]:
     planar_scans = sorted_planar_scans(planar_dir)
     qspect_series = qspect_processing.load_qspect_study(qspect_dir)
@@ -707,8 +680,26 @@ def ct_attenuation_correction_rows(
     if count == 0:
         raise ValueError("No paired planar/QSPECT acquisitions available")
 
+    fixed_crop_bounds = None
+    if crop_strategy == "fixed_day0":
+        day0_row = ct_attenuation_correct_scan(
+            planar_scans[0],
+            qspect_series[0],
+            qspect_dir,
+            threshold_fraction,
+        )
+        fixed_crop_bounds = (int(day0_row["crop_top"]), int(day0_row["crop_bottom"]))
+    elif crop_strategy != "individual":
+        raise ValueError(f"Unknown crop strategy: {crop_strategy}")
+
     rows = [
-        ct_attenuation_correct_scan(planar_scans[index], qspect_series[index], qspect_dir, threshold_fraction)
+        ct_attenuation_correct_scan(
+            planar_scans[index],
+            qspect_series[index],
+            qspect_dir,
+            threshold_fraction,
+            fixed_crop_bounds=fixed_crop_bounds,
+        )
         for index in range(count)
     ]
     first_datetime = next((row["datetime"] for row in rows if row["datetime"] is not None), None)
@@ -747,7 +738,9 @@ def write_ct_attenuation_correction_report(
         "Implementation:",
         "  - AP and PA are TEW-corrected before geometric mean.",
         "  - Dead-time correction is not applied in this CT-correction experiment.",
-        "  - Planar crop uses the imaging test-match rule: threshold 0.1, planar center of mass, Q/SPECT head-side gap.",
+        f"  - Crop strategy = {rows[0].get('crop_strategy', 'unknown')}.",
+        "  - Individual crop uses the imaging test-match rule: threshold 0.1, planar center of mass, Q/SPECT head-side gap.",
+        "  - Fixed_day0 crop reuses Day0 crop coordinates for every time point.",
         "  - CT series is selected with priority for ACCT [Transformed Object].",
         "  - HU to mu_208 uses a simple water-scaled approximation, not scanner-specific bilinear calibration.",
         f"  - mu_water_208_cm_inv = {MU_WATER_208_CM_INV:.4f}",
@@ -792,7 +785,7 @@ def write_ct_attenuation_correction_report(
             "Timing and CT metadata:",
         ]
     )
-    metadata_headers = ["day", "frame s", "scan s", "local s", "crop y", "CT series", "CT shape"]
+    metadata_headers = ["day", "frame s", "scan s", "local s", "crop y", "dynamic y", "CT series", "CT shape"]
     metadata_rows = [
         [
             f"{row['day_offset']:.2f}",
@@ -800,6 +793,7 @@ def write_ct_attenuation_correction_report(
             f"{row['scan_time_s']:.3f}",
             f"{row['local_dwell_time_s']:.3f}",
             f"{row['crop_top']}-{row['crop_bottom'] - 1}",
+            f"{row['dynamic_crop_top']}-{row['dynamic_crop_bottom'] - 1}",
             row["ct_series_description"],
             "x".join(str(value) for value in row["ct_shape"]),
         ]
@@ -894,20 +888,426 @@ def plot_ct_attenuation_maps(
     return output_path
 
 
+def add_ct_hu_panel(ax: plt.Axes, image: np.ndarray, title: str, vmin: float = -200.0, vmax: float = 300.0) -> None:
+    ax.imshow(image, cmap="gray", vmin=vmin, vmax=vmax, aspect="auto")
+    ax.set_title(title, fontsize=10)
+    ax.axis("off")
+
+
+def plot_ct_projection_qc_by_day(
+    row: Dict[str, Any],
+    output_dir: Path = CT_PROJECTION_QC_DIR,
+) -> Path:
+    """Save CT slice/projection/factor-map QC for one time point."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    label = str(row["qspect_label"]).lower()
+    output_path = output_dir / f"{label}_ct_projection_qc.png"
+
+    fig, axes = plt.subplots(1, 4, figsize=(13, 4), facecolor="white")
+    add_ct_hu_panel(axes[0], row["ct_coronal_center_hu"], "CT coronal center")
+    add_ct_hu_panel(axes[1], row["ct_mean_projection_hu"], "CT mean projection", vmin=-1000, vmax=100)
+
+    im_mu = axes[2].imshow(row["ct_mu_integral"], cmap="viridis", aspect="auto")
+    axes[2].set_title("Integral mu_208 dz", fontsize=10)
+    axes[2].axis("off")
+    fig.colorbar(im_mu, ax=axes[2], fraction=0.046, pad=0.02)
+
+    im_factor = axes[3].imshow(row["ct_factor_map"], cmap="viridis", aspect="auto")
+    axes[3].set_title("F_CT factor map", fontsize=10)
+    axes[3].axis("off")
+    fig.colorbar(im_factor, ax=axes[3], fraction=0.046, pad=0.02)
+
+    fig.suptitle(f"{row['qspect_label']} CT projection QC", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
+    plt.show()
+    return output_path
+
+
+def write_ct_factor_map_statistics_report(
+    rows: List[Dict[str, Any]],
+    output_path: Path = CT_PROJECTION_QC_REPORT_PATH,
+) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    headers = ["day", "label", "min", "p05", "median", "mean", "p95", "max", "clip low %", "clip high %"]
+    table_rows = []
+    for row in rows:
+        stats = row["ct_factor_stats"]
+        table_rows.append(
+            [
+                f"{row['day_offset']:.2f}",
+                str(row["qspect_label"]),
+                f"{stats['min']:.3f}",
+                f"{stats['p05']:.3f}",
+                f"{stats['median']:.3f}",
+                f"{stats['mean']:.3f}",
+                f"{stats['p95']:.3f}",
+                f"{stats['max']:.3f}",
+                f"{100.0 * stats['clip_low_fraction']:.2f}",
+                f"{100.0 * stats['clip_high_fraction']:.2f}",
+            ]
+        )
+
+    lines = [
+        "CT attenuation factor-map QC",
+        "============================",
+        "",
+        "Clipping meaning:",
+        "  F_CT is clipped to the configured range to avoid extreme nonphysical factors.",
+        "  clip high % reports the fraction of factor-map pixels equal to the upper clip value.",
+        "  If clip high % is large, the CT factor map or projection axis should be questioned.",
+        "",
+    ]
+    lines.extend(format_table(headers, table_rows))
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return output_path
+
+
+def plot_all_ct_projection_qc(rows: List[Dict[str, Any]]) -> List[Path]:
+    return [plot_ct_projection_qc_by_day(row) for row in rows]
+
+
+def crop_alignment_metrics(row: Dict[str, Any]) -> Dict[str, float]:
+    planar = row["planar_crop"]
+    ctac_crop = row["ctac_crop"]
+    qspect_mean = row["qspect_coronal_mean_projection"]
+    qspect_mip = row["qspect_coronal_mip_projection"]
+    qspect_mean_resized = ctac.resize_map_to_image(qspect_mean, planar.shape)
+    pixel_spacing_cm = row["crop_height_cm"] / planar.shape[0]
+    planar_com_y = weighted_center_of_mass_y(planar)
+    qspect_mean_com_y = weighted_center_of_mass_y(qspect_mean_resized)
+    return {
+        "planar_com_y_px": planar_com_y,
+        "qspect_mean_com_y_px": qspect_mean_com_y,
+        "com_y_difference_cm": (planar_com_y - qspect_mean_com_y) * pixel_spacing_cm,
+        "planar_vs_qspect_mean_corr": resized_image_correlation(planar, qspect_mean),
+        "ctac_vs_qspect_mean_corr": resized_image_correlation(ctac_crop, qspect_mean),
+        "planar_vs_qspect_mip_corr": resized_image_correlation(planar, qspect_mip),
+    }
+
+
+def plot_crop_comparison_by_day(
+    row: Dict[str, Any],
+    output_dir: Path = CT_CROP_BY_DAY_DIR,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    label = str(row["qspect_label"]).lower()
+    output_path = output_dir / f"{label}_planar_ctac_qspect_crop.png"
+
+    panels = [
+        ("Planar GM TEW crop", row["planar_crop"], "magma"),
+        ("CT attenuation factor", row["ct_factor_resized"], "viridis"),
+        ("Planar GM CTAC", row["ctac_crop"], "magma"),
+        ("Q/SPECT coronal mean projection", row["qspect_coronal_mean_projection"], "magma"),
+        ("Q/SPECT coronal MIP", row["qspect_coronal_mip_projection"], "magma"),
+        ("Q/SPECT center slice", row["qspect_coronal_center"], "magma"),
+    ]
+    fig, axes = plt.subplots(2, 3, figsize=(12, 8), facecolor="white")
+    for ax, (title, image, cmap) in zip(axes.ravel(), panels):
+        if title == "CT attenuation factor":
+            im = ax.imshow(image, cmap=cmap, aspect="auto")
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+        else:
+            vmin, vmax = view_patient_images.display_limits(image)
+            ax.imshow(image, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
+        ax.set_title(title, fontsize=10)
+        ax.axis("off")
+    fig.suptitle(f"{row['qspect_label']} crop correspondence", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
+    plt.show()
+    return output_path
+
+
+def write_crop_alignment_report(
+    rows: List[Dict[str, Any]],
+    output_path: Path = CT_CROP_ALIGNMENT_REPORT_PATH,
+) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    headers = [
+        "day",
+        "label",
+        "crop y",
+        "crop cm",
+        "COM diff cm",
+        "GM-Qmean corr",
+        "CTAC-Qmean corr",
+        "GM-Qmip corr",
+    ]
+    table_rows = []
+    for row in rows:
+        metrics = crop_alignment_metrics(row)
+        row["crop_alignment_metrics"] = metrics
+        table_rows.append(
+            [
+                f"{row['day_offset']:.2f}",
+                str(row["qspect_label"]),
+                f"{row['crop_top']}-{row['crop_bottom'] - 1}",
+                f"{row['crop_height_cm']:.1f}",
+                f"{metrics['com_y_difference_cm']:.2f}",
+                f"{metrics['planar_vs_qspect_mean_corr']:.3f}",
+                f"{metrics['ctac_vs_qspect_mean_corr']:.3f}",
+                f"{metrics['planar_vs_qspect_mip_corr']:.3f}",
+            ]
+        )
+
+    lines = [
+        "Planar crop versus Q/SPECT projection correspondence",
+        "====================================================",
+        "",
+        "Images saved in this folder compare the planar crop against Q/SPECT coronal projections.",
+        "The coronal mean projection is preferred for correspondence with planar imaging because it uses the full Q/SPECT volume.",
+        "The center slice is kept only as a visual anatomical reference.",
+        "",
+    ]
+    lines.extend(format_table(headers, table_rows))
+    lines.extend(
+        [
+            "",
+            "Metric notes:",
+            "  COM diff cm = planar crop Y center of mass minus resized Q/SPECT mean-projection Y center of mass.",
+            "  Correlations are normalized image correlations after resizing Q/SPECT to the planar crop shape.",
+            "  These are quick quality-control metrics, not a validated registration score.",
+            "",
+        ]
+    )
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+    return output_path
+
+
+def plot_all_crop_comparisons(rows: List[Dict[str, Any]]) -> List[Path]:
+    return [plot_crop_comparison_by_day(row) for row in rows]
+
+
+def paired_crop_strategy_rows(
+    individual_rows: List[Dict[str, Any]],
+    fixed_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    fixed_by_label = {str(row["qspect_label"]): row for row in fixed_rows}
+    paired = []
+    for individual in individual_rows:
+        fixed = fixed_by_label.get(str(individual["qspect_label"]))
+        if fixed is None:
+            continue
+        qspect_activity = float(individual["qspect_activity_mbq"])
+        paired.append(
+            {
+                "day_offset": float(individual["day_offset"]),
+                "label": str(individual["qspect_label"]),
+                "qspect_activity_mbq": qspect_activity,
+                "individual_gm_mbq": float(individual["planar_crop_local_activity_mbq"]),
+                "individual_ctac_mbq": float(individual["ctac_local_activity_mbq"]),
+                "individual_ceff": float(individual["effective_ct_factor"]),
+                "individual_crop_y": f"{individual['crop_top']}-{individual['crop_bottom'] - 1}",
+                "fixed_gm_mbq": float(fixed["planar_crop_local_activity_mbq"]),
+                "fixed_ctac_mbq": float(fixed["ctac_local_activity_mbq"]),
+                "fixed_ceff": float(fixed["effective_ct_factor"]),
+                "fixed_crop_y": f"{fixed['crop_top']}-{fixed['crop_bottom'] - 1}",
+                "individual_ctac_over_qspect": float(individual["ctac_local_activity_mbq"]) / qspect_activity,
+                "fixed_ctac_over_qspect": float(fixed["ctac_local_activity_mbq"]) / qspect_activity,
+                "fixed_vs_individual_ctac": float(fixed["ctac_local_activity_mbq"]) / float(individual["ctac_local_activity_mbq"]),
+            }
+        )
+    return paired
+
+
+def write_crop_strategy_comparison_report(
+    individual_rows: List[Dict[str, Any]],
+    fixed_rows: List[Dict[str, Any]],
+    output_path: Path = CT_CROP_STRATEGY_REPORT_PATH,
+) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    paired = paired_crop_strategy_rows(individual_rows, fixed_rows)
+    headers = [
+        "day",
+        "label",
+        "QSP MBq",
+        "ind CTAC",
+        "fix CTAC",
+        "ind/QSP",
+        "fix/QSP",
+        "fix/ind",
+        "ind crop y",
+        "fix crop y",
+    ]
+    table_rows = [
+        [
+            f"{row['day_offset']:.2f}",
+            row["label"],
+            f"{row['qspect_activity_mbq']:.1f}",
+            f"{row['individual_ctac_mbq']:.1f}",
+            f"{row['fixed_ctac_mbq']:.1f}",
+            f"{row['individual_ctac_over_qspect']:.3f}",
+            f"{row['fixed_ctac_over_qspect']:.3f}",
+            f"{row['fixed_vs_individual_ctac']:.3f}",
+            row["individual_crop_y"],
+            row["fixed_crop_y"],
+        ]
+        for row in paired
+    ]
+    lines = [
+        "CT attenuation correction: crop strategy comparison",
+        "===================================================",
+        "",
+        "Compared strategies:",
+        "  individual = crop recalculated independently at each time point.",
+        "  fixed_day0 = Day0 crop coordinates reused for all time points.",
+        "",
+        "Rationale:",
+        "  Individual cropping can become unstable when activity decreases and the planar image becomes noisy.",
+        "  Fixed Day0 cropping tests whether a stable anatomical field of view improves temporal consistency.",
+        "",
+    ]
+    lines.extend(format_table(headers, table_rows))
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return output_path
+
+
+def plot_crop_strategy_comparison(
+    individual_rows: List[Dict[str, Any]],
+    fixed_rows: List[Dict[str, Any]],
+    output_path: Path = CT_CROP_STRATEGY_FIGURE_PATH,
+) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    paired = paired_crop_strategy_rows(individual_rows, fixed_rows)
+    days = np.asarray([row["day_offset"] for row in paired], dtype=np.float64)
+    qspect = np.asarray([row["qspect_activity_mbq"] for row in paired], dtype=np.float64)
+    individual_ctac = np.asarray([row["individual_ctac_mbq"] for row in paired], dtype=np.float64)
+    fixed_ctac = np.asarray([row["fixed_ctac_mbq"] for row in paired], dtype=np.float64)
+    individual_ratio = np.asarray([row["individual_ctac_over_qspect"] for row in paired], dtype=np.float64)
+    fixed_ratio = np.asarray([row["fixed_ctac_over_qspect"] for row in paired], dtype=np.float64)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), facecolor="white")
+    axes[0].plot(days, qspect, marker="^", linewidth=2, label="Q/SPECT")
+    axes[0].plot(days, individual_ctac, marker="s", linewidth=2, label="CTAC individual crop")
+    axes[0].plot(days, fixed_ctac, marker="o", linewidth=2, label="CTAC fixed Day0 crop")
+    axes[0].set_xlabel("Time after first acquisition (days)")
+    axes[0].set_ylabel("Activity estimate (MBq)")
+    axes[0].grid(True, linestyle="--", alpha=0.3)
+    axes[0].legend(frameon=False, fontsize=9)
+
+    axes[1].plot(days, individual_ratio, marker="s", linewidth=2, label="Individual crop / Q/SPECT")
+    axes[1].plot(days, fixed_ratio, marker="o", linewidth=2, label="Fixed Day0 crop / Q/SPECT")
+    axes[1].set_xlabel("Time after first acquisition (days)")
+    axes[1].set_ylabel("CTAC / Q/SPECT")
+    axes[1].grid(True, linestyle="--", alpha=0.3)
+    axes[1].legend(frameon=False, fontsize=9)
+    for ax in axes:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
+    plt.show()
+    return output_path
+
+
+def plot_ct_attenuation_activity_crop_comparison(
+    individual_rows: List[Dict[str, Any]],
+    fixed_rows: List[Dict[str, Any]],
+    output_path: Path = CT_ACTIVITY_CROP_COMPARISON_FIGURE_PATH,
+) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    paired = paired_crop_strategy_rows(individual_rows, fixed_rows)
+    days = np.asarray([row["day_offset"] for row in paired], dtype=np.float64)
+    qspect = np.asarray([row["qspect_activity_mbq"] for row in paired], dtype=np.float64)
+    individual_gm = np.asarray([row["individual_gm_mbq"] for row in paired], dtype=np.float64)
+    individual_ctac = np.asarray([row["individual_ctac_mbq"] for row in paired], dtype=np.float64)
+    fixed_ctac = np.asarray([row["fixed_ctac_mbq"] for row in paired], dtype=np.float64)
+    individual_ceff = np.asarray([row["individual_ceff"] for row in paired], dtype=np.float64)
+    fixed_ceff = np.asarray([row["fixed_ceff"] for row in paired], dtype=np.float64)
+    individual_uncertainty = CTAC_RELATIVE_METHOD_UNCERTAINTY * individual_ctac
+    fixed_uncertainty = CTAC_RELATIVE_METHOD_UNCERTAINTY * fixed_ctac
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), facecolor="white")
+    axes[0].plot(days, individual_gm, marker="o", linewidth=2, color="tab:blue", label="Planar GM TEW")
+    axes[0].fill_between(
+        days,
+        individual_ctac - individual_uncertainty,
+        individual_ctac + individual_uncertainty,
+        color="tab:orange",
+        alpha=0.12,
+        linewidth=0,
+    )
+    axes[0].fill_between(
+        days,
+        fixed_ctac - fixed_uncertainty,
+        fixed_ctac + fixed_uncertainty,
+        color="tab:green",
+        alpha=0.12,
+        linewidth=0,
+    )
+    axes[0].plot(days, individual_ctac, marker="s", linewidth=2, color="tab:orange", label="Planar GM CTAC - individual crop")
+    axes[0].plot(days, fixed_ctac, marker="o", linewidth=2, color="tab:green", label="Planar GM CTAC - fixed Day0 crop")
+    axes[0].plot(days, qspect, marker="^", linewidth=2, color="tab:red", label="Q/SPECT")
+    axes[0].set_xlabel("Time after first acquisition (days)")
+    axes[0].set_ylabel("Activity estimate (MBq)")
+    axes[0].grid(True, linestyle="--", alpha=0.3)
+    axes[0].legend(frameon=False, fontsize=8)
+
+    axes[1].plot(days, individual_ceff, marker="s", linewidth=2, color="tab:orange", label="Individual crop")
+    axes[1].plot(days, fixed_ceff, marker="o", linewidth=2, color="tab:green", label="Fixed Day0 crop")
+    axes[1].set_xlabel("Time after first acquisition (days)")
+    axes[1].set_ylabel("Effective CT correction factor")
+    axes[1].grid(True, linestyle="--", alpha=0.3)
+    axes[1].legend(frameon=False, fontsize=9)
+    for ax in axes:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
+    plt.show()
+    return output_path
+
+
 def run_ct_attenuation_correction(
     planar_dir: Path = planar_processing.default_planar_study_dir(),
     qspect_dir: Path = qspect_processing.default_qspect_dir(),
     threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
 ) -> List[Dict[str, Any]]:
-    rows = ct_attenuation_correction_rows(planar_dir, qspect_dir, threshold_fraction)
+    rows = ct_attenuation_correction_rows(planar_dir, qspect_dir, threshold_fraction, crop_strategy="individual")
+    fixed_rows = ct_attenuation_correction_rows(planar_dir, qspect_dir, threshold_fraction, crop_strategy="fixed_day0")
     report_path = write_ct_attenuation_correction_report(rows)
-    figure_path = plot_ct_attenuation_correction(rows)
+    fixed_report_path = write_ct_attenuation_correction_report(
+        fixed_rows,
+        CT_CORRECTION_DIR / "ct_attenuation_correction_report_fixed_day0.txt",
+    )
+    ct_qc_report_path = write_ct_factor_map_statistics_report(rows)
+    crop_report_path = write_crop_alignment_report(rows)
+    fixed_crop_report_path = write_crop_alignment_report(fixed_rows, CT_FIXED_CROP_ALIGNMENT_REPORT_PATH)
+    strategy_report_path = write_crop_strategy_comparison_report(rows, fixed_rows)
+    figure_path = plot_ct_attenuation_correction(rows, CT_INDIVIDUAL_CROP_FIGURE_PATH)
+    strategy_figure_path = plot_crop_strategy_comparison(rows, fixed_rows)
+    activity_crop_comparison_path = plot_ct_attenuation_activity_crop_comparison(rows, fixed_rows)
     map_path = plot_ct_attenuation_maps(rows[0])
+    ct_qc_paths = plot_all_ct_projection_qc(rows)
+    crop_paths = plot_all_crop_comparisons(rows)
+    fixed_crop_paths = [plot_crop_comparison_by_day(row, CT_FIXED_CROP_BY_DAY_DIR) for row in fixed_rows]
     print(f"Saved CT correction report: {report_path}")
-    print(f"Saved CT correction figure: {figure_path}")
-    print(f"Saved CT correction figure: {figure_path.with_suffix('.svg')}")
+    print(f"Saved fixed Day0 CT correction report: {fixed_report_path}")
+    print(f"Saved CT factor-map QC report: {ct_qc_report_path}")
+    print(f"Saved crop alignment report: {crop_report_path}")
+    print(f"Saved fixed Day0 crop alignment report: {fixed_crop_report_path}")
+    print(f"Saved crop strategy report: {strategy_report_path}")
+    print(f"Saved individual-crop CT correction figure: {figure_path}")
+    print(f"Saved individual-crop CT correction figure: {figure_path.with_suffix('.svg')}")
+    print(f"Saved crop strategy figure: {strategy_figure_path}")
+    print(f"Saved crop strategy figure: {strategy_figure_path.with_suffix('.svg')}")
+    print(f"Saved CT activity crop comparison figure: {activity_crop_comparison_path}")
+    print(f"Saved CT activity crop comparison figure: {activity_crop_comparison_path.with_suffix('.svg')}")
     print(f"Saved CT correction map figure: {map_path}")
     print(f"Saved CT correction map figure: {map_path.with_suffix('.svg')}")
+    print(f"Saved CT projection QC figures in: {CT_PROJECTION_QC_DIR}")
+    print(f"Saved {len(ct_qc_paths)} CT projection QC PNG files")
+    print(f"Saved crop comparison figures in: {CT_CROP_BY_DAY_DIR}")
+    print(f"Saved {len(crop_paths)} crop comparison PNG files")
+    print(f"Saved fixed Day0 crop comparison figures in: {CT_FIXED_CROP_BY_DAY_DIR}")
+    print(f"Saved {len(fixed_crop_paths)} fixed Day0 crop comparison PNG files")
     for row in rows:
         print(
             f"day={row['day_offset']:.2f} | "
