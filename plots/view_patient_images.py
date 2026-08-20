@@ -17,8 +17,10 @@ import qspect_processing
 
 
 SELECTED_DAY = "Day0"
+PLANAR_DAY_LABELS = ("Day0", "Day1", "Day2", "Day3", "Day6")
 OUTPUT_DIR = Path("fig") / "imaging"
 TEST_MATCH_DIR = OUTPUT_DIR / "test_match"
+SEPARATE_MODALITIES_DIR = TEST_MATCH_DIR / "separate_modalities"
 OUTPUT_FILE = "planar_tew_corrected.png"
 PLANAR_QSPECT_LENGTH_FILE = "planar_tew_corrected_qspect_length.png"
 PLANAR_QSPECT_LENGTH_SIDE_BY_SIDE_FILE = "planar_qspect_length_side_by_side.png"
@@ -33,7 +35,11 @@ def day_index(day_label: str) -> int:
     match = re.search(r"day\s*(\d+)", day_label, re.IGNORECASE)
     if not match:
         raise ValueError(f"Invalid day label: {day_label}")
-    return int(match.group(1))
+    normalized_label = f"Day{int(match.group(1))}"
+    if normalized_label not in PLANAR_DAY_LABELS:
+        available = ", ".join(PLANAR_DAY_LABELS)
+        raise ValueError(f"Planar day {day_label!r} not available. Available days: {available}")
+    return PLANAR_DAY_LABELS.index(normalized_label)
 
 
 def sorted_planar_scan_dirs(study_dir: Path) -> List[Path]:
@@ -537,6 +543,83 @@ def make_ct_slice_figure(
     return save_figure(fig, output_file)
 
 
+def save_single_modality_figure(
+    image: np.ndarray,
+    title: str,
+    output_file: Path,
+    is_ct: bool = False,
+) -> Path:
+    """Save one image panel filling a common test-match figure frame."""
+    fig, ax = plt.subplots(figsize=(4, 7), facecolor="white")
+    if is_ct:
+        ax.imshow(image, cmap="gray", vmin=-200, vmax=300, aspect="auto")
+    else:
+        vmin, vmax = display_limits(image)
+        ax.imshow(image, cmap="hot", vmin=vmin, vmax=vmax, aspect="auto")
+    ax.set_title(title, fontsize=12)
+    ax.axis("off")
+    fig.tight_layout(pad=0.2)
+    return save_figure(fig, output_file)
+
+
+def make_separate_modality_figures(
+    planar_study_dir: Path = planar_processing.default_planar_study_dir(),
+    qspect_dir: Path = qspect_processing.default_qspect_dir(),
+    selected_day: str = SELECTED_DAY,
+    output_dir: Path = SEPARATE_MODALITIES_DIR,
+    qspect: Dict[str, Any] | None = None,
+    ct: Dict[str, Any] | None = None,
+) -> List[Path]:
+    """Save separate planar WB, Q/SPECT coronal views, and matched CT figures."""
+    planar = load_planar_day(planar_study_dir, selected_day)
+    if qspect is None:
+        qspect = load_qspect_day(qspect_dir, selected_day)
+    if ct is None:
+        ct = load_ct_for_qspect_day(qspect_dir, qspect)
+
+    planar_image = planar["correction"]["corrected_image"]["image"]
+    qspect_volume = np.asarray(qspect["volume"], dtype=np.float64)
+    coronal_index = qspect_volume.shape[1] // 2
+    qspect_coronal = orient_qspect_display(qspect_volume[:, coronal_index, :])
+    qspect_coronal_mean = orient_qspect_display(np.mean(qspect_volume, axis=1))
+    ct_volume = np.asarray(ct["volume"], dtype=np.float64)
+    ct_description = str(ct.get("series_description", "CT"))
+    ct_is_matched = "TRANSFORMED" in ct_description.upper() and ct_volume.shape == qspect_volume.shape
+    ct_coronal_index = coronal_index if ct_is_matched else ct_volume.shape[1] // 2
+    ct_coronal = orient_qspect_display(ct_volume[:, ct_coronal_index, :])
+    ct_title = (
+        "CT transformé\n(coupe coronale centrale)"
+        if ct_is_matched
+        else "CT non recalé\n(coupe coronale centrale)"
+    )
+
+    day = selected_day.lower()
+    output_dir = output_dir.expanduser().resolve()
+    return [
+        save_single_modality_figure(
+            planar_image,
+            "Planaire WB\n(projection GM AP/PA, TEW)",
+            output_dir / f"{day}_planar_wb_tew_gm.png",
+        ),
+        save_single_modality_figure(
+            qspect_coronal,
+            "Q/SPECT\n(coupe coronale centrale)",
+            output_dir / f"{day}_qspect_coronal_center.png",
+        ),
+        save_single_modality_figure(
+            qspect_coronal_mean,
+            "Q/SPECT\n(projection coronale moyenne)",
+            output_dir / f"{day}_qspect_coronal_mean_projection.png",
+        ),
+        save_single_modality_figure(
+            ct_coronal,
+            ct_title,
+            output_dir / f"{day}_ct_coronal_center.png",
+            is_ct=True,
+        ),
+    ]
+
+
 def main() -> None:
     selected_day = sys.argv[1] if len(sys.argv) > 1 else SELECTED_DAY
     output_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else OUTPUT_DIR
@@ -579,6 +662,11 @@ def main() -> None:
         qspect=qspect,
         ct=ct,
     )
+    saved_separate_modalities = make_separate_modality_figures(
+        selected_day=selected_day,
+        qspect=qspect,
+        ct=ct,
+    )
     print(f"Saved figure: {saved_planar}")
     print(f"Saved figure: {saved_planar_qspect_length}")
     print(f"Saved figure: {saved_planar_qspect_side_by_side}")
@@ -586,6 +674,8 @@ def main() -> None:
     print(f"Saved figure: {saved_qspect_center}")
     print(f"Saved figure: {saved_qspect_max}")
     print(f"Saved figure: {saved_ct_center}")
+    for saved_figure in saved_separate_modalities:
+        print(f"Saved figure: {saved_figure}")
     print(f"Selected CT: {ct['series_description']} | shape={ct['shape']} | spacing={ct['pixel_spacing']} | slice_thickness={ct['slice_thickness']}")
 
 

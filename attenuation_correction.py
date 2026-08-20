@@ -49,7 +49,9 @@ CT_CROP_ALIGNMENT_REPORT_PATH = CT_CROP_BY_DAY_DIR / "crop_alignment_metrics.txt
 CT_FIXED_CROP_ALIGNMENT_REPORT_PATH = CT_FIXED_CROP_BY_DAY_DIR / "crop_alignment_metrics.txt"
 CT_CROP_STRATEGY_REPORT_PATH = CT_CORRECTION_DIR / "ct_crop_strategy_comparison.txt"
 CT_CROP_STRATEGY_FIGURE_PATH = CT_CORRECTION_DIR / "ct_crop_strategy_comparison.png"
-CT_ACTIVITY_CROP_COMPARISON_FIGURE_PATH = CT_CORRECTION_FIGURE_PATH
+CTAC_PLANAR_FIXED_CROP_FIGURE_PATH = CT_CORRECTION_DIR / "ctac_planar_fixed_crop_vs_qspect.png"
+CTAC_PLANAR_FIXED_CROP_RATIO_FIGURE_PATH = CT_CORRECTION_DIR / "ctac_planar_fixed_crop_qspect_ratio.png"
+CT_ACTIVITY_CROP_COMPARISON_FIGURE_PATH = CT_CORRECTION_DIR / "ct_attenuation_correction_activity_crop_comparison.png"
 MU_WATER_208_CM_INV = ctac.MU_WATER_208_CM_INV
 CT_FACTOR_CLIP = ctac.CT_FACTOR_CLIP
 PLANAR_QSPECT_CROP_THRESHOLD = planar_qspect_crop.PLANAR_QSPECT_CROP_THRESHOLD
@@ -1205,6 +1207,83 @@ def plot_crop_strategy_comparison(
     return output_path
 
 
+def plot_ctac_planar_fixed_crop_vs_qspect(
+    fixed_rows: List[Dict[str, Any]],
+    output_path: Path = CTAC_PLANAR_FIXED_CROP_FIGURE_PATH,
+) -> Path:
+    """Plot Q/SPECT and CTAC Planar using only the fixed Day0 crop."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    days = np.asarray([row["day_offset"] for row in fixed_rows], dtype=np.float64)
+    qspect = np.asarray([row["qspect_activity_mbq"] for row in fixed_rows], dtype=np.float64)
+    fixed_ctac = np.asarray([row["ctac_local_activity_mbq"] for row in fixed_rows], dtype=np.float64)
+
+    fig, ax = plt.subplots(figsize=(7.5, 5.0), facecolor="white")
+    ax.plot(
+        days,
+        qspect,
+        marker="^",
+        linewidth=2,
+        color="tab:blue",
+        label="Q/SPECT",
+    )
+    ax.plot(
+        days,
+        fixed_ctac,
+        marker="o",
+        linewidth=2,
+        color="tab:green",
+        label="CTAC Planar",
+    )
+    ax.set_title("CTAC Planar")
+    ax.set_xlabel("Temps après la première acquisition (jours)")
+    ax.set_ylabel("Activité estimée (MBq)")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.legend(frameon=False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
+def plot_ctac_planar_fixed_crop_qspect_ratio(
+    fixed_rows: List[Dict[str, Any]],
+    output_path: Path = CTAC_PLANAR_FIXED_CROP_RATIO_FIGURE_PATH,
+) -> Path:
+    """Plot the fixed-Day0-crop CTAC Planar activity divided by Q/SPECT."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    days = np.asarray([row["day_offset"] for row in fixed_rows], dtype=np.float64)
+    ratio = np.asarray(
+        [row["ctac_local_activity_mbq"] / row["qspect_activity_mbq"] for row in fixed_rows],
+        dtype=np.float64,
+    )
+
+    fig, ax = plt.subplots(figsize=(7.5, 5.0), facecolor="white")
+    ax.axhline(1.0, color="black", linewidth=1.5, label="Accord avec Q/SPECT")
+    ax.plot(
+        days,
+        ratio,
+        marker="o",
+        linewidth=2,
+        color="tab:green",
+        label="CTAC Planar / Q/SPECT",
+    )
+    ax.set_title("Ratio CTAC Planar / Q/SPECT")
+    ax.set_xlabel("Temps après la première acquisition (jours)")
+    ax.set_ylabel("Ratio d'activité CTAC Planar / Q/SPECT")
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.legend(frameon=False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
 def plot_ct_attenuation_activity_crop_comparison(
     individual_rows: List[Dict[str, Any]],
     fixed_rows: List[Dict[str, Any]],
@@ -1219,29 +1298,11 @@ def plot_ct_attenuation_activity_crop_comparison(
     fixed_ctac = np.asarray([row["fixed_ctac_mbq"] for row in paired], dtype=np.float64)
     individual_ceff = np.asarray([row["individual_ceff"] for row in paired], dtype=np.float64)
     fixed_ceff = np.asarray([row["fixed_ceff"] for row in paired], dtype=np.float64)
-    individual_uncertainty = CTAC_RELATIVE_METHOD_UNCERTAINTY * individual_ctac
-    fixed_uncertainty = CTAC_RELATIVE_METHOD_UNCERTAINTY * fixed_ctac
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), facecolor="white")
-    axes[0].plot(days, individual_gm, marker="o", linewidth=2, color="tab:blue", label="Planar GM TEW")
-    axes[0].fill_between(
-        days,
-        individual_ctac - individual_uncertainty,
-        individual_ctac + individual_uncertainty,
-        color="tab:orange",
-        alpha=0.12,
-        linewidth=0,
-    )
-    axes[0].fill_between(
-        days,
-        fixed_ctac - fixed_uncertainty,
-        fixed_ctac + fixed_uncertainty,
-        color="tab:green",
-        alpha=0.12,
-        linewidth=0,
-    )
-    axes[0].plot(days, individual_ctac, marker="s", linewidth=2, color="tab:orange", label="Planar GM CTAC - individual crop")
-    axes[0].plot(days, fixed_ctac, marker="o", linewidth=2, color="tab:green", label="Planar GM CTAC - fixed Day0 crop")
+    axes[0].plot(days, individual_gm, marker="o", linewidth=2, color="tab:blue", label="Planaire non corrigé")
+    axes[0].plot(days, individual_ctac, marker="s", linewidth=2, color="tab:orange", label="Planaire + CTAC — crop individuel")
+    axes[0].plot(days, fixed_ctac, marker="o", linewidth=2, color="tab:green", label="Planaire + CTAC — crop fixe Day0")
     axes[0].plot(days, qspect, marker="^", linewidth=2, color="tab:red", label="Q/SPECT")
     axes[0].set_xlabel("Time after first acquisition (days)")
     axes[0].set_ylabel("Activity estimate (MBq)")
@@ -1283,6 +1344,8 @@ def run_ct_attenuation_correction(
     strategy_report_path = write_crop_strategy_comparison_report(rows, fixed_rows)
     figure_path = plot_ct_attenuation_correction(rows, CT_INDIVIDUAL_CROP_FIGURE_PATH)
     strategy_figure_path = plot_crop_strategy_comparison(rows, fixed_rows)
+    ctac_planar_fixed_crop_path = plot_ctac_planar_fixed_crop_vs_qspect(fixed_rows)
+    ctac_planar_fixed_crop_ratio_path = plot_ctac_planar_fixed_crop_qspect_ratio(fixed_rows)
     activity_crop_comparison_path = plot_ct_attenuation_activity_crop_comparison(rows, fixed_rows)
     map_path = plot_ct_attenuation_maps(rows[0])
     ct_qc_paths = plot_all_ct_projection_qc(rows)
@@ -1298,6 +1361,8 @@ def run_ct_attenuation_correction(
     print(f"Saved individual-crop CT correction figure: {figure_path.with_suffix('.svg')}")
     print(f"Saved crop strategy figure: {strategy_figure_path}")
     print(f"Saved crop strategy figure: {strategy_figure_path.with_suffix('.svg')}")
+    print(f"Saved CTAC Planar fixed-crop figure: {ctac_planar_fixed_crop_path}")
+    print(f"Saved CTAC Planar/Q-SPECT ratio figure: {ctac_planar_fixed_crop_ratio_path}")
     print(f"Saved CT activity crop comparison figure: {activity_crop_comparison_path}")
     print(f"Saved CT activity crop comparison figure: {activity_crop_comparison_path.with_suffix('.svg')}")
     print(f"Saved CT correction map figure: {map_path}")

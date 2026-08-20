@@ -57,7 +57,7 @@ from scipy.ndimage import zoom
 from plots import view_patient_images
 
 
-MU_WATER_208_CM_INV = 0.154
+MU_WATER_208_CM_INV = 0.135
 CT_FACTOR_CLIP = (1.0, 20.0)
 
 
