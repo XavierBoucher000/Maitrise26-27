@@ -19,8 +19,10 @@ For a simple slab, the remaining attenuation factor is approximately:
 
     F_CT(x,y) = exp(0.5 * integral(mu_208(x,y,z) dz))
 
+    mu_integral = np.sum(mu_208, axis=1) * ap_spacing_cm
+
 This file estimates mu_208 from CT HU using a simple water-scaled
-approximation:
+approximation (rearange the standard Hu definition):
 
     mu_208 ~= mu_water_208 * (1 + HU / 1000)
 
@@ -57,7 +59,7 @@ from scipy.ndimage import zoom
 from plots import view_patient_images
 
 
-MU_WATER_208_CM_INV = 0.135
+MU_WATER_208_CM_INV = 0.154
 CT_FACTOR_CLIP = (1.0, 20.0)
 
 
@@ -95,51 +97,6 @@ def ct_attenuation_factor_map(
     }
 
 
-def ct_planar_equivalent_images(ct: Dict[str, Any]) -> Dict[str, np.ndarray]:
-    """Return CT views comparable to a planar AP/PA projection.
-
-    The mean projection is the CT analogue of a planar projection: it collapses
-    the CT volume through the assumed AP/PA axis. It is for QC/visualization,
-    not for activity quantification.
-    """
-    volume_hu = np.asarray(ct["volume"], dtype=np.float64)
-    center_index = volume_hu.shape[1] // 2
-    return {
-        "coronal_center_hu": view_patient_images.orient_qspect_display(volume_hu[:, center_index, :]),
-        "mean_projection_hu": view_patient_images.orient_qspect_display(np.mean(volume_hu, axis=1)),
-    }
-
-
-def factor_map_statistics(
-    factor_map: np.ndarray,
-    clip_range: Tuple[float, float] = CT_FACTOR_CLIP,
-) -> Dict[str, float]:
-    """Summarize a CT attenuation-factor map for QC."""
-    finite = np.asarray(factor_map, dtype=np.float64)
-    finite = finite[np.isfinite(finite)]
-    if finite.size == 0:
-        return {
-            "min": np.nan,
-            "p05": np.nan,
-            "median": np.nan,
-            "mean": np.nan,
-            "p95": np.nan,
-            "max": np.nan,
-            "clip_low_fraction": np.nan,
-            "clip_high_fraction": np.nan,
-        }
-    return {
-        "min": float(np.min(finite)),
-        "p05": float(np.percentile(finite, 5)),
-        "median": float(np.median(finite)),
-        "mean": float(np.mean(finite)),
-        "p95": float(np.percentile(finite, 95)),
-        "max": float(np.max(finite)),
-        "clip_low_fraction": float(np.mean(finite <= clip_range[0])),
-        "clip_high_fraction": float(np.mean(finite >= clip_range[1])),
-    }
-
-
 def resize_map_to_image(image: np.ndarray, reference_shape: Tuple[int, int], order: int = 1) -> np.ndarray:
     """Resize a 2D CT/projection map to a target 2D image shape."""
     image = np.asarray(image, dtype=np.float64)
@@ -163,7 +120,6 @@ def apply_ct_attenuation_correction_to_crop(
     effective_factor = after_counts / before_counts if before_counts > 0 else np.nan
     return {
         "ct_map": ct_map,
-        "ct_factor_stats": factor_map_statistics(ct_map["factor_map"], tuple(ct_map["clip_range"])),
         "ct_factor_resized": factor_resized,
         "ctac_crop": corrected_crop,
         "planar_crop_counts": before_counts,
