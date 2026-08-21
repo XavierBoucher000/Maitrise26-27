@@ -596,6 +596,7 @@ def ct_attenuation_correct_scan(
     qspect_dir: Path,
     threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
     fixed_crop_bounds: Optional[Tuple[int, int]] = None,
+    conversion_method: str = "water_scaled",
 ) -> Dict[str, Any]:
     planar_result = tew_geometric_mean_for_scan(scan)
     planar_record = {
@@ -610,7 +611,9 @@ def ct_attenuation_correct_scan(
         fixed_crop_bounds=fixed_crop_bounds,
     )
     ct = view_patient_images.load_ct_for_qspect_day(qspect_dir, qspect)
-    ct_correction = ctac.apply_ct_attenuation_correction_to_crop(crop_result["crop"], ct)
+    ct_correction = ctac.apply_ct_attenuation_correction_to_crop(
+        crop_result["crop"], ct, conversion_method=conversion_method
+    )
     ct_projection_qc = ctac.ct_planar_equivalent_images(ct)
     qspect_projections = qspect_coronal_projections(qspect)
     timing = planar_result["timing"]
@@ -667,6 +670,7 @@ def ct_attenuation_correct_scan(
         "qspect_coronal_mean_projection": qspect_projections["mean_projection"],
         "qspect_coronal_mip_projection": qspect_projections["mip_projection"],
         "threshold_fraction": threshold_fraction,
+        "conversion_method": conversion_method,
     }
 
 
@@ -675,6 +679,7 @@ def ct_attenuation_correction_rows(
     qspect_dir: Path = qspect_processing.default_qspect_dir(),
     threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
     crop_strategy: str = "individual",
+    conversion_method: str = "water_scaled",
 ) -> List[Dict[str, Any]]:
     planar_scans = sorted_planar_scans(planar_dir)
     qspect_series = qspect_processing.load_qspect_study(qspect_dir)
@@ -689,6 +694,7 @@ def ct_attenuation_correction_rows(
             qspect_series[0],
             qspect_dir,
             threshold_fraction,
+            conversion_method=conversion_method,
         )
         fixed_crop_bounds = (int(day0_row["crop_top"]), int(day0_row["crop_bottom"]))
     elif crop_strategy != "individual":
@@ -701,6 +707,7 @@ def ct_attenuation_correction_rows(
             qspect_dir,
             threshold_fraction,
             fixed_crop_bounds=fixed_crop_bounds,
+            conversion_method=conversion_method,
         )
         for index in range(count)
     ]
