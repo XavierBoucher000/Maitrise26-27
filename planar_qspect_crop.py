@@ -51,6 +51,71 @@ from plots import view_patient_images
 
 
 PLANAR_QSPECT_CROP_THRESHOLD = 0.1
+EXCLUDED_COUNTS_MASK_THRESHOLD = 0.01
+
+
+def estimate_excluded_crop_counts(
+    planar_image: np.ndarray,
+    crop_top: int,
+    crop_bottom: int,
+    mask_threshold_fraction: float = EXCLUDED_COUNTS_MASK_THRESHOLD,
+) -> Dict[str, Any]:
+    """Estimate how much positive planar signal is excluded by a crop.
+
+    The primary fractions use pixels above a relative activity threshold to
+    reduce the contribution from positive background noise. Unmasked positive
+    sums are also returned as a sensitivity check. This is a crop diagnostic;
+    it does not add excluded counts to the quantitative activity estimate.
+    """
+    image = np.nan_to_num(
+        np.asarray(planar_image, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0
+    )
+    if image.ndim != 2:
+        raise ValueError("Excluded-count analysis requires a 2D planar image")
+    crop_top = int(crop_top)
+    crop_bottom = int(crop_bottom)
+    if crop_top < 0 or crop_bottom > image.shape[0] or crop_bottom <= crop_top:
+        raise ValueError(f"Invalid crop bounds: ({crop_top}, {crop_bottom})")
+    if not 0.0 <= mask_threshold_fraction < 1.0:
+        raise ValueError("Mask threshold fraction must be in [0, 1)")
+
+    positive = np.clip(image, 0.0, None)
+    maximum = float(np.max(positive))
+    if maximum <= 0.0:
+        raise ValueError("Cannot estimate excluded counts from an empty planar image")
+    body_mask = positive >= mask_threshold_fraction * maximum
+    masked = np.where(body_mask, positive, 0.0)
+
+    def region_sums(source: np.ndarray) -> Dict[str, float]:
+        above = float(np.sum(source[:crop_top, :]))
+        inside = float(np.sum(source[crop_top:crop_bottom, :]))
+        below = float(np.sum(source[crop_bottom:, :]))
+        total = above + inside + below
+        return {
+            "above": above,
+            "inside": inside,
+            "below": below,
+            "outside": above + below,
+            "total": total,
+        }
+
+    masked_counts = region_sums(masked)
+    positive_counts = region_sums(positive)
+    total = masked_counts["total"]
+    if total <= 0.0:
+        raise ValueError("The thresholded body mask contains no counts")
+
+    return {
+        "mask_threshold_fraction": float(mask_threshold_fraction),
+        "body_mask_pixels": int(np.count_nonzero(body_mask)),
+        "masked_counts": masked_counts,
+        "positive_counts": positive_counts,
+        "above_fraction": masked_counts["above"] / total,
+        "inside_fraction": masked_counts["inside"] / total,
+        "below_fraction": masked_counts["below"] / total,
+        "outside_fraction": masked_counts["outside"] / total,
+        "unmasked_outside_fraction": positive_counts["outside"] / positive_counts["total"],
+    }
 
 
 def compute_planar_crop_for_qspect(
@@ -107,6 +172,7 @@ def compute_planar_crop_for_qspect(
             raise ValueError(f"Invalid fixed crop bounds: {fixed_crop_bounds}")
 
     crop = planar_image[crop_top:crop_bottom, :]
+    excluded_counts = estimate_excluded_crop_counts(planar_image, crop_top, crop_bottom)
     return {
         "crop": crop,
         "crop_top": crop_top,
@@ -119,6 +185,7 @@ def compute_planar_crop_for_qspect(
         "planar_measurement": planar_measurement,
         "qspect_measurement": qspect_measurement,
         "qspect_coronal": qspect_coronal,
+        "excluded_counts": excluded_counts,
     }
 
 

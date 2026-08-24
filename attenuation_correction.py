@@ -671,6 +671,7 @@ def ct_attenuation_correct_scan(
         "qspect_coronal_mip_projection": qspect_projections["mip_projection"],
         "threshold_fraction": threshold_fraction,
         "conversion_method": conversion_method,
+        "crop_excluded_counts": crop_result["excluded_counts"],
     }
 
 

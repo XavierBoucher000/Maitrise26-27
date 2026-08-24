@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 import ct_attenuation_correction as ctac
+import planar_qspect_crop
 
 
 def test_raystation_density_matches_nodes_and_clamps_outside_range():
@@ -69,3 +70,16 @@ def test_apply_crop_can_select_either_conversion_method():
     assert new["conversion_method"] == "raystation_materials"
     assert old["ct_factor_stats"]["mean"] > 1.0
     assert new["ct_factor_stats"]["mean"] > 1.0
+
+
+def test_excluded_crop_counts_splits_above_inside_and_below():
+    image = np.asarray([[1.0], [2.0], [3.0], [4.0]])
+    result = planar_qspect_crop.estimate_excluded_crop_counts(
+        image, crop_top=1, crop_bottom=3, mask_threshold_fraction=0.0
+    )
+
+    assert result["masked_counts"]["above"] == pytest.approx(1.0)
+    assert result["masked_counts"]["inside"] == pytest.approx(5.0)
+    assert result["masked_counts"]["below"] == pytest.approx(4.0)
+    assert result["outside_fraction"] == pytest.approx(0.5)
+    assert result["inside_fraction"] == pytest.approx(0.5)
