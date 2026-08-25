@@ -10,6 +10,7 @@ import attenuation_correction
 
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "crop_test"
+ALIGN_PA_TO_AP = True
 FIGURE_PATH = OUTPUT_DIR / "fixed_crop_excluded_counts_over_time.png"
 VALUES_PATH = OUTPUT_DIR / "fixed_crop_excluded_counts_values.csv"
 
@@ -19,6 +20,7 @@ def collect_fixed_crop_excluded_counts() -> List[Dict[str, Any]]:
     return attenuation_correction.ct_attenuation_correction_rows(
         crop_strategy="fixed_day0",
         conversion_method="water_scaled",
+        align_pa_to_ap=ALIGN_PA_TO_AP,
     )
 
 

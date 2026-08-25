@@ -16,6 +16,7 @@ import ct_attenuation_correction as ctac
 
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "ct_conversion_comparison"
+ALIGN_PA_TO_AP = True
 CALIBRATION_FIGURE = OUTPUT_DIR / "raystation_hu_to_mass_density.png"
 ACTIVITY_FIGURE = OUTPUT_DIR / "ctac_fixed_crop_conversion_comparison.png"
 TEMPORAL_DIFFERENCE_FIGURE = OUTPUT_DIR / "ctac_conversion_difference_over_time.png"
@@ -161,10 +162,12 @@ def run_comparison() -> Dict[str, Any]:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     calibration_path = plot_hu_to_density_calibration()
     old_rows = attenuation_correction.ct_attenuation_correction_rows(
-        crop_strategy="fixed_day0", conversion_method="water_scaled"
+        crop_strategy="fixed_day0", conversion_method="water_scaled",
+        align_pa_to_ap=ALIGN_PA_TO_AP,
     )
     new_rows = attenuation_correction.ct_attenuation_correction_rows(
-        crop_strategy="fixed_day0", conversion_method="raystation_materials"
+        crop_strategy="fixed_day0", conversion_method="raystation_materials",
+        align_pa_to_ap=ALIGN_PA_TO_AP,
     )
     values = _paired_arrays(old_rows, new_rows)
     activity_path = plot_fixed_crop_activity_comparison(values)

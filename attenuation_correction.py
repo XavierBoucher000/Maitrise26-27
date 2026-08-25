@@ -56,6 +56,7 @@ MU_WATER_208_CM_INV = ctac.MU_WATER_208_CM_INV
 CT_FACTOR_CLIP = ctac.CT_FACTOR_CLIP
 PLANAR_QSPECT_CROP_THRESHOLD = planar_qspect_crop.PLANAR_QSPECT_CROP_THRESHOLD
 CTAC_RELATIVE_METHOD_UNCERTAINTY = 0.25
+ALIGN_PA_TO_AP = planar_processing.ALIGN_PA_TO_AP
 
 
 def _energy_key(label: Any) -> str:
@@ -73,7 +74,11 @@ def group_by_energy_and_view(images: List[Dict[str, Any]]) -> Dict[str, Dict[str
     return groups
 
 
-def geometric_mean(ap: np.ndarray, pa: np.ndarray) -> np.ndarray:
+def geometric_mean(
+    ap: np.ndarray,
+    pa: np.ndarray,
+    align_pa_to_ap: bool = ALIGN_PA_TO_AP,
+) -> np.ndarray:
     """AP/PA geometric mean: sqrt(AP * PA).
 
     For a simplified uniform attenuation model, AP and PA have opposite
@@ -82,6 +87,8 @@ def geometric_mean(ap: np.ndarray, pa: np.ndarray) -> np.ndarray:
     """
     ap = np.asarray(ap, dtype=np.float64)
     pa = np.asarray(pa, dtype=np.float64)
+    if align_pa_to_ap:
+        pa = np.fliplr(pa)
     return np.sqrt(np.clip(ap, 0, None) * np.clip(pa, 0, None))
 
 
@@ -171,6 +178,7 @@ def body_mask_from_image(image: np.ndarray, threshold_fraction: float = 0.01) ->
 def masked_tew_geometric_mean_for_scan(
     scan: Dict[str, Any],
     body_mask_threshold_fraction: float = 0.01,
+    align_pa_to_ap: bool = ALIGN_PA_TO_AP,
 ) -> Dict[str, Any]:
     """Return body-masked AP/PA TEW geometric-mean counts for one planar scan.
 
@@ -182,7 +190,9 @@ def masked_tew_geometric_mean_for_scan(
     ap_tew = tew_correct_view_image(groups, "AP")
     pa_tew = tew_correct_view_image(groups, "PA")
 
-    geometric_images = planar_processing.geometric_mean_images(images)
+    geometric_images = planar_processing.geometric_mean_images(
+        images, align_pa_to_ap=align_pa_to_ap
+    )
     correction = planar_processing.apply_tew_correction(geometric_images)
     timing = planar_processing.planar_timing_from_dicom(images)
     correction = planar_processing.apply_dead_time_to_tew_correction(
@@ -195,7 +205,9 @@ def masked_tew_geometric_mean_for_scan(
 
     ap_tew_dead_time = dtcf * ap_tew
     pa_tew_dead_time = dtcf * pa_tew
-    geometric_tew_dead_time = geometric_mean(ap_tew_dead_time, pa_tew_dead_time)
+    geometric_tew_dead_time = geometric_mean(
+        ap_tew_dead_time, pa_tew_dead_time, align_pa_to_ap=align_pa_to_ap
+    )
     body_mask = body_mask_from_image(
         geometric_tew_dead_time,
         threshold_fraction=body_mask_threshold_fraction,
@@ -229,16 +241,20 @@ def masked_tew_geometric_mean_for_scan(
         "dead_time_loss_percent": float(dead_time_info.get("count_loss_percent", 0.0)),
         "local_dwell_time_seconds": timing.local_dwell_time_s,
         "sensitivity_cps_per_mbq": planar_processing.CAMERA_SENSITIVITY_CPS_PER_MBQ,
+        "align_pa_to_ap": bool(align_pa_to_ap),
     }
 
 
 def planar_masked_tew_decay_data(
     study_dir: Path,
     body_mask_threshold_fraction: float = 0.01,
+    align_pa_to_ap: bool = ALIGN_PA_TO_AP,
 ) -> List[Dict[str, Any]]:
     patient_scans = dicom_loader.load_patient_scans(study_dir)
     rows = [
-        masked_tew_geometric_mean_for_scan(scan, body_mask_threshold_fraction)
+        masked_tew_geometric_mean_for_scan(
+            scan, body_mask_threshold_fraction, align_pa_to_ap=align_pa_to_ap
+        )
         for scan in patient_scans["scans"]
         if scan["images"]
     ]
@@ -508,8 +524,13 @@ def run_one_patient_katt_baseline(
     planar_dir: Path = planar_processing.default_planar_study_dir(),
     qspect_dir: Path = qspect_processing.default_qspect_dir(),
     body_mask_threshold_fraction: float = 0.01,
+    align_pa_to_ap: bool = ALIGN_PA_TO_AP,
 ) -> Dict[str, Any]:
-    planar_rows = planar_masked_tew_decay_data(planar_dir, body_mask_threshold_fraction)
+    planar_rows = planar_masked_tew_decay_data(
+        planar_dir,
+        body_mask_threshold_fraction,
+        align_pa_to_ap=align_pa_to_ap,
+    )
     qspect_rows = qspect_processing.qspect_decay_data(qspect_dir)
     pairs = pair_planar_qspect_activity(planar_rows, qspect_rows)
     result = one_patient_katt_leave_one_out(pairs)
@@ -534,18 +555,22 @@ def sorted_planar_scans(study_dir: Path) -> List[Dict[str, Any]]:
     return scans
 
 
-def tew_geometric_mean_for_scan(scan: Dict[str, Any]) -> Dict[str, Any]:
+def tew_geometric_mean_for_scan(
+    scan: Dict[str, Any],
+    align_pa_to_ap: bool = ALIGN_PA_TO_AP,
+) -> Dict[str, Any]:
     """Return AP/PA TEW geometric mean without dead-time correction."""
     images = scan["images"]
     groups = group_by_energy_and_view(images)
     ap_tew = tew_correct_view_image(groups, "AP")
     pa_tew = tew_correct_view_image(groups, "PA")
     timing = planar_processing.planar_timing_from_dicom(images)
-    gm_tew = geometric_mean(ap_tew, pa_tew)
+    gm_tew = geometric_mean(ap_tew, pa_tew, align_pa_to_ap=align_pa_to_ap)
     return {
         "image": gm_tew,
         "timing": timing,
         "dead_time_applied": False,
+        "align_pa_to_ap": bool(align_pa_to_ap),
     }
 
 
@@ -597,8 +622,11 @@ def ct_attenuation_correct_scan(
     threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
     fixed_crop_bounds: Optional[Tuple[int, int]] = None,
     conversion_method: str = "water_scaled",
+    align_pa_to_ap: bool = ALIGN_PA_TO_AP,
 ) -> Dict[str, Any]:
-    planar_result = tew_geometric_mean_for_scan(scan)
+    planar_result = tew_geometric_mean_for_scan(
+        scan, align_pa_to_ap=align_pa_to_ap
+    )
     planar_record = {
         "images": scan["images"],
         "correction": {"corrected_image": {"image": planar_result["image"]}},
@@ -672,6 +700,7 @@ def ct_attenuation_correct_scan(
         "threshold_fraction": threshold_fraction,
         "conversion_method": conversion_method,
         "crop_excluded_counts": crop_result["excluded_counts"],
+        "align_pa_to_ap": bool(align_pa_to_ap),
     }
 
 
@@ -681,6 +710,7 @@ def ct_attenuation_correction_rows(
     threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
     crop_strategy: str = "individual",
     conversion_method: str = "water_scaled",
+    align_pa_to_ap: bool = ALIGN_PA_TO_AP,
 ) -> List[Dict[str, Any]]:
     planar_scans = sorted_planar_scans(planar_dir)
     qspect_series = qspect_processing.load_qspect_study(qspect_dir)
@@ -696,6 +726,7 @@ def ct_attenuation_correction_rows(
             qspect_dir,
             threshold_fraction,
             conversion_method=conversion_method,
+            align_pa_to_ap=align_pa_to_ap,
         )
         fixed_crop_bounds = (int(day0_row["crop_top"]), int(day0_row["crop_bottom"]))
     elif crop_strategy != "individual":
@@ -709,6 +740,7 @@ def ct_attenuation_correction_rows(
             threshold_fraction,
             fixed_crop_bounds=fixed_crop_bounds,
             conversion_method=conversion_method,
+            align_pa_to_ap=align_pa_to_ap,
         )
         for index in range(count)
     ]
@@ -747,6 +779,8 @@ def write_ct_attenuation_correction_report(
         "",
         "Implementation:",
         "  - AP and PA are TEW-corrected before geometric mean.",
+        f"  - align_pa_to_ap = {bool(rows[0].get('align_pa_to_ap', False))}.",
+        "  - When enabled, PA is horizontally flipped into the AP patient orientation.",
         "  - Dead-time correction is not applied in this CT-correction experiment.",
         f"  - Crop strategy = {rows[0].get('crop_strategy', 'unknown')}.",
         "  - Individual crop uses the imaging test-match rule: threshold 0.1, planar center of mass, Q/SPECT head-side gap.",
@@ -1338,9 +1372,16 @@ def run_ct_attenuation_correction(
     planar_dir: Path = planar_processing.default_planar_study_dir(),
     qspect_dir: Path = qspect_processing.default_qspect_dir(),
     threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
+    align_pa_to_ap: bool = ALIGN_PA_TO_AP,
 ) -> List[Dict[str, Any]]:
-    rows = ct_attenuation_correction_rows(planar_dir, qspect_dir, threshold_fraction, crop_strategy="individual")
-    fixed_rows = ct_attenuation_correction_rows(planar_dir, qspect_dir, threshold_fraction, crop_strategy="fixed_day0")
+    rows = ct_attenuation_correction_rows(
+        planar_dir, qspect_dir, threshold_fraction,
+        crop_strategy="individual", align_pa_to_ap=align_pa_to_ap,
+    )
+    fixed_rows = ct_attenuation_correction_rows(
+        planar_dir, qspect_dir, threshold_fraction,
+        crop_strategy="fixed_day0", align_pa_to_ap=align_pa_to_ap,
+    )
     report_path = write_ct_attenuation_correction_report(rows)
     fixed_report_path = write_ct_attenuation_correction_report(
         fixed_rows,

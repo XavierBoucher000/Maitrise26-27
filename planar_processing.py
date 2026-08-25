@@ -16,6 +16,7 @@ DETECTOR_LONGITUDINAL_FOV_MM = 387.0
 APPLY_DEAD_TIME_CORRECTION = True
 DEAD_TIME_TAU_US = 0.632
 DEAD_TIME_WIDE_WINDOW_ENERGIES = ["Low Energy Scatter", "Lower Scatter", "Photopeak", "Upper Scatter"]
+ALIGN_PA_TO_AP = True
 
 
 @dataclass(frozen=True)
@@ -54,8 +55,16 @@ def group_ap_pa_by_energy(images: List[Dict[str, Any]]) -> Dict[str, Dict[str, D
     return groups
 
 
-def geometric_mean_images(images: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Create one geometric-mean image per energy window from AP and PA views."""
+def geometric_mean_images(
+    images: List[Dict[str, Any]],
+    align_pa_to_ap: bool = ALIGN_PA_TO_AP,
+) -> List[Dict[str, Any]]:
+    """Create one geometric-mean image per energy window from AP and PA views.
+
+    ``align_pa_to_ap=True`` horizontally flips the posterior detector image so
+    that AP and PA array columns follow the same patient left/right direction.
+    Set it to ``False`` to reproduce the historical, unaligned calculation.
+    """
     means = []
     for energy, views in group_ap_pa_by_energy(images).items():
         ap = views.get("AP")
@@ -65,6 +74,8 @@ def geometric_mean_images(images: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         ap_image = np.asarray(ap["image"], dtype=np.float64)
         pa_image = np.asarray(pa["image"], dtype=np.float64)
+        if align_pa_to_ap:
+            pa_image = np.fliplr(pa_image)
         mean_image = np.sqrt(np.clip(ap_image, 0, None) * np.clip(pa_image, 0, None))
 
         item = ap.copy()
@@ -76,6 +87,7 @@ def geometric_mean_images(images: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         item["pixel_mean"] = float(mean_image.mean())
         item["pixel_dtype"] = str(mean_image.dtype)
         item["source_views"] = ("AP", "PA")
+        item["align_pa_to_ap"] = bool(align_pa_to_ap)
         means.append(item)
 
     return sorted(means, key=lambda item: ENERGY_ORDER.index(item["energy_window"]) if item["energy_window"] in ENERGY_ORDER else len(ENERGY_ORDER))
@@ -402,7 +414,10 @@ def run_planar_study_workflow(study_dir: Path) -> None:
         dicom_loader.plot_decay_curve(patient_scans)
 
 
-def planar_tew_decay_data(study_dir: Path) -> List[Dict[str, Any]]:
+def planar_tew_decay_data(
+    study_dir: Path,
+    align_pa_to_ap: bool = ALIGN_PA_TO_AP,
+) -> List[Dict[str, Any]]:
     """Return per-acquisition planar TEW data without plotting.
 
     This is the numeric API used by comparison scripts. It keeps planar loading,
@@ -415,7 +430,9 @@ def planar_tew_decay_data(study_dir: Path) -> List[Dict[str, Any]]:
         if not images:
             continue
 
-        geometric_images = geometric_mean_images(images)
+        geometric_images = geometric_mean_images(
+            images, align_pa_to_ap=align_pa_to_ap
+        )
         correction = apply_tew_correction(geometric_images)
         timing = planar_timing_from_dicom(images)
         duration_seconds = timing.actual_frame_duration_s
@@ -441,6 +458,7 @@ def planar_tew_decay_data(study_dir: Path) -> List[Dict[str, Any]]:
         rows.append(
             {
                 "label": scan["scan_name"],
+                "align_pa_to_ap": bool(align_pa_to_ap),
                 "datetime": scan_datetime,
                 "day_offset": day_offset,
                 "photopeak_counts": photopeak_counts,

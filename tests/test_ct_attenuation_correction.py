@@ -3,6 +3,7 @@ import pytest
 
 import ct_attenuation_correction as ctac
 import planar_qspect_crop
+import attenuation_correction
 
 
 def test_raystation_density_matches_nodes_and_clamps_outside_range():
@@ -83,3 +84,18 @@ def test_excluded_crop_counts_splits_above_inside_and_below():
     assert result["masked_counts"]["below"] == pytest.approx(4.0)
     assert result["outside_fraction"] == pytest.approx(0.5)
     assert result["inside_fraction"] == pytest.approx(0.5)
+
+
+def test_geometric_mean_alignment_option_flips_pa_horizontally():
+    ap = np.asarray([[1.0, 4.0]])
+    pa = np.asarray([[9.0, 16.0]])
+
+    historical = attenuation_correction.geometric_mean(
+        ap, pa, align_pa_to_ap=False
+    )
+    aligned = attenuation_correction.geometric_mean(
+        ap, pa, align_pa_to_ap=True
+    )
+
+    np.testing.assert_allclose(historical, [[3.0, 8.0]])
+    np.testing.assert_allclose(aligned, [[4.0, 6.0]])
