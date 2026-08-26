@@ -90,7 +90,6 @@ def plot_dtcf_summary(series: Dict[str, List[Dict[str, Any]]]) -> None:
     fig.tight_layout()
     DTCF_FIGURE_PATH.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(DTCF_FIGURE_PATH, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(DTCF_FIGURE_PATH.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
@@ -142,7 +141,6 @@ def main() -> None:
     OUT_PATH.write_text(build_report(), encoding="utf-8")
     print(f"Saved: {OUT_PATH}")
     print(f"Saved: {DTCF_FIGURE_PATH}")
-    print(f"Saved: {DTCF_FIGURE_PATH.with_suffix('.svg')}")
 
 
 if __name__ == "__main__":

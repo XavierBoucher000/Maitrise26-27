@@ -104,7 +104,6 @@ def plot_counts(df: pd.DataFrame, include_low_energy: bool, output_path: Path) -
         ax.spines[spine].set_visible(False)
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
@@ -136,7 +135,6 @@ def plot_ratios(df: pd.DataFrame, include_low_energy: bool, output_path: Path) -
         ax.spines[spine].set_visible(False)
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
@@ -150,13 +148,9 @@ def main() -> None:
     plot_ratios(df, include_low_energy=True, output_path=RATIOS_FIGURE_PATH)
     plot_ratios(df, include_low_energy=False, output_path=RATIOS_ZOOM_FIGURE_PATH)
     print(f"Saved: {COUNTS_FIGURE_PATH}")
-    print(f"Saved: {COUNTS_FIGURE_PATH.with_suffix('.svg')}")
     print(f"Saved: {COUNTS_ZOOM_FIGURE_PATH}")
-    print(f"Saved: {COUNTS_ZOOM_FIGURE_PATH.with_suffix('.svg')}")
     print(f"Saved: {RATIOS_FIGURE_PATH}")
-    print(f"Saved: {RATIOS_FIGURE_PATH.with_suffix('.svg')}")
     print(f"Saved: {RATIOS_ZOOM_FIGURE_PATH}")
-    print(f"Saved: {RATIOS_ZOOM_FIGURE_PATH.with_suffix('.svg')}")
     print(f"Saved: {TABLE_PATH}")
 
 

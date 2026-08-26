@@ -27,7 +27,6 @@ def _save_png_svg(fig: plt.Figure, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 

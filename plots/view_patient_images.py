@@ -212,7 +212,7 @@ def orient_qspect_display(image: np.ndarray) -> np.ndarray:
 def save_figure(fig: plt.Figure, output_file: Path) -> Path:
     output_file = output_file.expanduser().resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, dpi=150, bbox_inches="tight", facecolor="white", pad_inches=0)
+    fig.savefig(output_file, dpi=300, bbox_inches="tight", facecolor="white", pad_inches=0)
     plt.show()
     return output_file
 

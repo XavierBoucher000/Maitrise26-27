@@ -152,10 +152,7 @@ ax.tick_params(axis="both", colors="#111111", labelsize=10)
 plt.tight_layout()
 
 png_path = OUT_DIR / "177Lu_gamma_spectrum_windows.png"
-svg_path = OUT_DIR / "177Lu_gamma_spectrum_windows.svg"
 fig.savefig(png_path, dpi=300, bbox_inches="tight", facecolor="white")
-fig.savefig(svg_path, bbox_inches="tight", facecolor="white")
 plt.close(fig)
 
 print(f"Saved: {png_path}")
-print(f"Saved: {svg_path}")

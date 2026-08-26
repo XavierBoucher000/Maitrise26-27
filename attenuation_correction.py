@@ -515,7 +515,6 @@ def plot_one_patient_katt_validation(
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.show()
     return output_path
 
@@ -538,7 +537,6 @@ def run_one_patient_katt_baseline(
     figure_path = plot_one_patient_katt_validation(result)
     print(f"Saved attenuation baseline report: {report_path}")
     print(f"Saved attenuation baseline figure: {figure_path}")
-    print(f"Saved attenuation baseline figure: {figure_path.with_suffix('.svg')}")
     print(
         "One-patient k_att baseline: "
         f"k={result['global_k_att']:.4f}, "
@@ -899,7 +897,6 @@ def plot_ct_attenuation_correction(
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.show()
     return output_path
 
@@ -927,7 +924,6 @@ def plot_ct_attenuation_maps(
         ax.axis("off")
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.show()
     return output_path
 
@@ -964,7 +960,6 @@ def plot_ct_projection_qc_by_day(
     fig.suptitle(f"{row['qspect_label']} CT projection QC", fontsize=12)
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.show()
     return output_path
 
@@ -1060,7 +1055,6 @@ def plot_crop_comparison_by_day(
     fig.suptitle(f"{row['qspect_label']} crop correspondence", fontsize=12)
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.show()
     return output_path
 
@@ -1244,7 +1238,6 @@ def plot_crop_strategy_comparison(
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.show()
     return output_path
 
@@ -1363,7 +1356,6 @@ def plot_ct_attenuation_activity_crop_comparison(
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.show()
     return output_path
 
@@ -1407,15 +1399,11 @@ def run_ct_attenuation_correction(
     print(f"Saved fixed Day0 crop alignment report: {fixed_crop_report_path}")
     print(f"Saved crop strategy report: {strategy_report_path}")
     print(f"Saved individual-crop CT correction figure: {figure_path}")
-    print(f"Saved individual-crop CT correction figure: {figure_path.with_suffix('.svg')}")
     print(f"Saved crop strategy figure: {strategy_figure_path}")
-    print(f"Saved crop strategy figure: {strategy_figure_path.with_suffix('.svg')}")
     print(f"Saved CTAC Planar fixed-crop figure: {ctac_planar_fixed_crop_path}")
     print(f"Saved CTAC Planar/Q-SPECT ratio figure: {ctac_planar_fixed_crop_ratio_path}")
     print(f"Saved CT activity crop comparison figure: {activity_crop_comparison_path}")
-    print(f"Saved CT activity crop comparison figure: {activity_crop_comparison_path.with_suffix('.svg')}")
     print(f"Saved CT correction map figure: {map_path}")
-    print(f"Saved CT correction map figure: {map_path.with_suffix('.svg')}")
     print(f"Saved CT projection QC figures in: {CT_PROJECTION_QC_DIR}")
     print(f"Saved {len(ct_qc_paths)} CT projection QC PNG files")
     print(f"Saved crop comparison figures in: {CT_CROP_BY_DAY_DIR}")

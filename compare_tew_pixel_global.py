@@ -260,7 +260,7 @@ def plot_activity_comparison(rows: List[Dict[str, float]]) -> Path:
     ax.grid(alpha=0.3)
     ax.legend()
     fig.tight_layout(pad=1.2)
-    fig.savefig(ACTIVITY_FIGURE_PATH, dpi=200, bbox_inches="tight")
+    fig.savefig(ACTIVITY_FIGURE_PATH, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return ACTIVITY_FIGURE_PATH
 
@@ -291,7 +291,7 @@ def plot_tew_effect(rows: List[Dict[str, float]]) -> Path:
     ax.grid(alpha=0.3)
     ax.legend()
     fig.tight_layout(pad=1.2)
-    fig.savefig(TEW_EFFECT_FIGURE_PATH, dpi=200, bbox_inches="tight")
+    fig.savefig(TEW_EFFECT_FIGURE_PATH, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return TEW_EFFECT_FIGURE_PATH
 
@@ -316,7 +316,7 @@ def plot_qspect_ratio(rows: List[Dict[str, float]]) -> Path:
     ax.grid(alpha=0.3)
     ax.legend()
     fig.tight_layout(pad=1.2)
-    fig.savefig(QSPECT_RATIO_FIGURE_PATH, dpi=200, bbox_inches="tight")
+    fig.savefig(QSPECT_RATIO_FIGURE_PATH, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return QSPECT_RATIO_FIGURE_PATH
 

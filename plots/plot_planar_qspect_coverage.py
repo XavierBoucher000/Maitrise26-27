@@ -175,14 +175,12 @@ def make_coverage_figure(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"planar_qspect_coverage_{selected_day.lower()}.png"
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.show(block=False)
     fig.canvas.flush_events()
     time.sleep(0.1)
     plt.close("all")
 
     print(f"Saved figure: {output_path}")
-    print(f"Saved figure: {output_path.with_suffix('.svg')}")
     print("")
     print("Image dimensions and spacing:")
     print(

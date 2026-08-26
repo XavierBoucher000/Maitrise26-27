@@ -829,9 +829,7 @@ def plot_selected_activity_bi_fit_comparison(pairs: List[Dict[str, Any]]) -> Non
     fig.tight_layout()
     SELECTED_BI_FIT_FIGURE_PATH.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(SELECTED_BI_FIT_FIGURE_PATH, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(SELECTED_BI_FIT_FIGURE_PATH.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     print(f"Saved selected bi-only activity figure: {SELECTED_BI_FIT_FIGURE_PATH}")
-    print(f"Saved selected bi-only activity figure: {SELECTED_BI_FIT_FIGURE_PATH.with_suffix('.svg')}")
     show_figure()
 
 
@@ -877,9 +875,7 @@ def save_ratio_figure(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     print(f"Saved ratio figure: {output_path}")
-    print(f"Saved ratio figure: {output_path.with_suffix('.svg')}")
     show_figure()
 
 
@@ -997,9 +993,7 @@ def plot_total_window_activity_fit_comparison(pairs: List[Dict[str, Any]]) -> No
     fig.tight_layout()
     TOTAL_ACTIVITY_FIT_FIGURE_PATH.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(TOTAL_ACTIVITY_FIT_FIGURE_PATH, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(TOTAL_ACTIVITY_FIT_FIGURE_PATH.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     print(f"Saved total-window activity fit figure: {TOTAL_ACTIVITY_FIT_FIGURE_PATH}")
-    print(f"Saved total-window activity fit figure: {TOTAL_ACTIVITY_FIT_FIGURE_PATH.with_suffix('.svg')}")
     show_figure()
 
 
@@ -1107,9 +1101,7 @@ def plot_powerpoint_activity_bi_fit(pairs: List[Dict[str, Any]]) -> None:
     fig.tight_layout()
     POWERPOINT_FIT_FIGURE_PATH.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(POWERPOINT_FIT_FIGURE_PATH, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(POWERPOINT_FIT_FIGURE_PATH.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     print(f"Saved PowerPoint fit figure: {POWERPOINT_FIT_FIGURE_PATH}")
-    print(f"Saved PowerPoint fit figure: {POWERPOINT_FIT_FIGURE_PATH.with_suffix('.svg')}")
     show_figure()
 
 
@@ -1143,9 +1135,7 @@ def plot_powerpoint_planar_counts_bi_fit(pairs: List[Dict[str, Any]]) -> None:
     fig.tight_layout()
     PLANAR_COUNTS_POWERPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(PLANAR_COUNTS_POWERPOINT_PATH, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(PLANAR_COUNTS_POWERPOINT_PATH.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     print(f"Saved planar counts PowerPoint figure: {PLANAR_COUNTS_POWERPOINT_PATH}")
-    print(f"Saved planar counts PowerPoint figure: {PLANAR_COUNTS_POWERPOINT_PATH.with_suffix('.svg')}")
     show_figure()
 
 
@@ -1282,9 +1272,7 @@ def plot_powerpoint_patient_4v6_planar_counts_bi_fit(root_dir: Path = PATIENT_4V
     fig.tight_layout()
     PATIENT_4V6_COUNTS_POWERPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(PATIENT_4V6_COUNTS_POWERPOINT_PATH, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(PATIENT_4V6_COUNTS_POWERPOINT_PATH.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     print(f"Saved patient 4v6 planar counts figure: {PATIENT_4V6_COUNTS_POWERPOINT_PATH}")
-    print(f"Saved patient 4v6 planar counts figure: {PATIENT_4V6_COUNTS_POWERPOINT_PATH.with_suffix('.svg')}")
     show_figure()
 
 

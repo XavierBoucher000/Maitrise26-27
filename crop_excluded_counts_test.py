@@ -63,7 +63,6 @@ def plot_excluded_counts(
         ax.spines["right"].set_visible(False)
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return output_path
 

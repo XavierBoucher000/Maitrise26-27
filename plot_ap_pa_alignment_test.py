@@ -90,7 +90,6 @@ def plot_ap_pa_alignment_test(output_path: Path = OUTPUT_PATH) -> Path:
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    fig.savefig(output_path.with_suffix(".svg"), bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return output_path
 
@@ -98,4 +97,3 @@ def plot_ap_pa_alignment_test(output_path: Path = OUTPUT_PATH) -> Path:
 if __name__ == "__main__":
     saved = plot_ap_pa_alignment_test()
     print(f"Saved AP/PA alignment test: {saved}")
-    print(f"Saved AP/PA alignment test: {saved.with_suffix('.svg')}")
