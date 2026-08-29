@@ -61,6 +61,7 @@ planar crop; this is not full 2D/3D registration.
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
 import numpy as np
+import SimpleITK as sitk
 from scipy.ndimage import zoom
 
 from plots import view_patient_images
@@ -349,6 +350,166 @@ def resize_map_to_image(image: np.ndarray, reference_shape: Tuple[int, int], ord
     factors = (reference_shape[0] / image.shape[0], reference_shape[1] / image.shape[1])
     resized = zoom(image, factors, order=order)
     return resized[: reference_shape[0], : reference_shape[1]]
+
+
+def _centered_origin_xy_mm(
+    shape_yx: Tuple[int, int],
+    spacing_yx_mm: Tuple[float, float],
+) -> Tuple[float, float]:
+    """Return an origin that places the center pixel at physical (0, 0)."""
+    height, width = (int(shape_yx[0]), int(shape_yx[1]))
+    spacing_y, spacing_x = (float(spacing_yx_mm[0]), float(spacing_yx_mm[1]))
+    if height <= 0 or width <= 0 or spacing_y <= 0.0 or spacing_x <= 0.0:
+        raise ValueError("Image shape and physical spacing must be positive")
+    return (
+        -0.5 * (width - 1) * spacing_x,
+        -0.5 * (height - 1) * spacing_y,
+    )
+
+
+def resample_optical_depth_to_planar_simpleitk(
+    mu_integral: np.ndarray,
+    source_spacing_yx_mm: Tuple[float, float],
+    planar_shape_yx: Tuple[int, int],
+    planar_spacing_yx_mm: Tuple[float, float],
+    blur_fwhm_mm: float = 0.0,
+    output_to_source_offset_xy_mm: Tuple[float, float] = (0.0, 0.0),
+    clip_range: Tuple[float, float] = CT_FACTOR_CLIP,
+) -> Dict[str, Any]:
+    """Resample a projected CT optical-depth map onto a planar physical grid.
+
+    The source and output grids are centered at the same physical point because
+    the whole-body planar DICOM currently lacks a validated common origin with
+    the transformed CT.  Unlike ``resize_map_to_image``, this function preserves
+    the physical pixel spacings and crops/pads non-overlapping physical extent.
+
+    ``blur_fwhm_mm`` optionally degrades the CT projection in physical units
+    before resampling. ``output_to_source_offset_xy_mm`` is the SimpleITK
+    output-point to source-point sampling offset; it is zero for the geometry-
+    only comparison and must not be tuned against Q/SPECT activity.
+    """
+    optical_depth = np.nan_to_num(
+        np.asarray(mu_integral, dtype=np.float64),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    if optical_depth.ndim != 2:
+        raise ValueError("Projected optical depth must be a 2D array")
+    source_spacing = tuple(float(value) for value in source_spacing_yx_mm)
+    planar_spacing = tuple(float(value) for value in planar_spacing_yx_mm)
+    if len(source_spacing) != 2 or len(planar_spacing) != 2:
+        raise ValueError("Source and planar spacing must each contain two values")
+    if blur_fwhm_mm < 0.0:
+        raise ValueError("blur_fwhm_mm must be non-negative")
+    if len(output_to_source_offset_xy_mm) != 2:
+        raise ValueError("output_to_source_offset_xy_mm must contain x and y")
+
+    source_image = sitk.GetImageFromArray(optical_depth, isVector=False)
+    source_image.SetSpacing((source_spacing[1], source_spacing[0]))
+    source_image.SetOrigin(_centered_origin_xy_mm(optical_depth.shape, source_spacing))
+    source_image.SetDirection((1.0, 0.0, 0.0, 1.0))
+
+    if blur_fwhm_mm > 0.0:
+        sigma_mm = float(blur_fwhm_mm) / 2.354820045
+        source_image = sitk.SmoothingRecursiveGaussian(source_image, sigma_mm)
+    else:
+        sigma_mm = 0.0
+
+    planar_height, planar_width = (int(planar_shape_yx[0]), int(planar_shape_yx[1]))
+    reference = sitk.Image([planar_width, planar_height], sitk.sitkFloat64)
+    reference.SetSpacing((planar_spacing[1], planar_spacing[0]))
+    reference.SetOrigin(_centered_origin_xy_mm(planar_shape_yx, planar_spacing))
+    reference.SetDirection((1.0, 0.0, 0.0, 1.0))
+
+    transform = sitk.TranslationTransform(2)
+    transform.SetOffset(tuple(float(value) for value in output_to_source_offset_xy_mm))
+    resampled_image = sitk.Resample(
+        source_image,
+        reference,
+        transform,
+        sitk.sitkLinear,
+        0.0,
+        sitk.sitkFloat64,
+    )
+    resampled_optical_depth = sitk.GetArrayFromImage(resampled_image)
+    factor_map = np.exp(0.5 * resampled_optical_depth)
+    factor_map = np.clip(factor_map, clip_range[0], clip_range[1])
+
+    source_extent_yx_mm = (
+        (optical_depth.shape[0] - 1) * source_spacing[0],
+        (optical_depth.shape[1] - 1) * source_spacing[1],
+    )
+    planar_extent_yx_mm = (
+        (planar_height - 1) * planar_spacing[0],
+        (planar_width - 1) * planar_spacing[1],
+    )
+    return {
+        "mu_integral_resampled": resampled_optical_depth,
+        "factor_map": factor_map,
+        "source_spacing_yx_mm": source_spacing,
+        "planar_spacing_yx_mm": planar_spacing,
+        "source_extent_yx_mm": source_extent_yx_mm,
+        "planar_extent_yx_mm": planar_extent_yx_mm,
+        "blur_fwhm_mm": float(blur_fwhm_mm),
+        "blur_sigma_mm": sigma_mm,
+        "output_to_source_offset_xy_mm": tuple(
+            float(value) for value in output_to_source_offset_xy_mm
+        ),
+        "alignment_assumption": "physical-grid center alignment",
+    }
+
+
+def apply_ct_attenuation_correction_to_crop_simpleitk(
+    planar_crop: np.ndarray,
+    planar_spacing_yx_mm: Tuple[float, float],
+    ct: Dict[str, Any],
+    conversion_method: str = "water_scaled",
+    blur_fwhm_mm: float = 0.0,
+    output_to_source_offset_xy_mm: Tuple[float, float] = (0.0, 0.0),
+) -> Dict[str, Any]:
+    """Apply a center-aligned, physical-grid SimpleITK CT correction to a crop."""
+    planar = np.asarray(planar_crop, dtype=np.float64)
+    if planar.ndim != 2:
+        raise ValueError("Planar crop must be a 2D image")
+    if conversion_method == "water_scaled":
+        ct_map = ct_attenuation_factor_map(ct)
+    elif conversion_method == "raystation_materials":
+        ct_map = ct_attenuation_factor_map_raystation_materials(ct)
+    else:
+        raise ValueError(f"Unknown CT conversion method: {conversion_method}")
+
+    pixel_spacing = ct.get("pixel_spacing") or []
+    slice_spacing_mm = ct.get("slice_spacing") or ct.get("slice_thickness")
+    if len(pixel_spacing) < 2 or slice_spacing_mm is None:
+        raise ValueError("CT in-plane spacing and slice spacing are required")
+    source_spacing_yx_mm = (float(slice_spacing_mm), float(pixel_spacing[1]))
+    physical = resample_optical_depth_to_planar_simpleitk(
+        ct_map["mu_integral"],
+        source_spacing_yx_mm=source_spacing_yx_mm,
+        planar_shape_yx=planar.shape,
+        planar_spacing_yx_mm=planar_spacing_yx_mm,
+        blur_fwhm_mm=blur_fwhm_mm,
+        output_to_source_offset_xy_mm=output_to_source_offset_xy_mm,
+        clip_range=ct_map["clip_range"],
+    )
+    factor_map = physical["factor_map"]
+    corrected_crop = planar * factor_map
+    before_counts = float(np.sum(planar))
+    after_counts = float(np.sum(corrected_crop))
+    effective_factor = after_counts / before_counts if before_counts > 0.0 else np.nan
+    return {
+        "ct_map": ct_map,
+        "ct_factor_resampled": factor_map,
+        "ctac_crop": corrected_crop,
+        "planar_crop_counts": before_counts,
+        "ctac_crop_counts": after_counts,
+        "effective_ct_factor": effective_factor,
+        "ct_factor_stats": factor_map_statistics(factor_map, ct_map["clip_range"]),
+        "conversion_method": conversion_method,
+        "resampling_method": "SimpleITK physical-grid center alignment",
+        **physical,
+    }
 
 
 def apply_ct_attenuation_correction_to_crop(

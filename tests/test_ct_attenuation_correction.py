@@ -4,6 +4,7 @@ import pytest
 import ct_attenuation_correction as ctac
 import planar_qspect_crop
 import attenuation_correction
+import compare_crop_methods
 
 
 def test_raystation_density_matches_nodes_and_clamps_outside_range():
@@ -73,6 +74,37 @@ def test_apply_crop_can_select_either_conversion_method():
     assert new["ct_factor_stats"]["mean"] > 1.0
 
 
+def test_simpleitk_resampling_preserves_identical_physical_grid():
+    optical_depth = np.arange(20, dtype=float).reshape(4, 5) / 20.0
+    result = ctac.resample_optical_depth_to_planar_simpleitk(
+        optical_depth,
+        source_spacing_yx_mm=(5.0, 4.0),
+        planar_shape_yx=optical_depth.shape,
+        planar_spacing_yx_mm=(5.0, 4.0),
+    )
+
+    np.testing.assert_allclose(result["mu_integral_resampled"], optical_depth)
+    np.testing.assert_allclose(
+        result["factor_map"],
+        np.exp(0.5 * optical_depth),
+    )
+
+
+def test_simpleitk_resampling_uses_planar_shape_and_physical_extents():
+    optical_depth = np.ones((3, 3), dtype=float)
+    result = ctac.resample_optical_depth_to_planar_simpleitk(
+        optical_depth,
+        source_spacing_yx_mm=(4.0, 4.0),
+        planar_shape_yx=(5, 5),
+        planar_spacing_yx_mm=(2.0, 2.0),
+    )
+
+    assert result["factor_map"].shape == (5, 5)
+    assert result["source_extent_yx_mm"] == pytest.approx((8.0, 8.0))
+    assert result["planar_extent_yx_mm"] == pytest.approx((8.0, 8.0))
+    np.testing.assert_allclose(result["factor_map"], np.exp(0.5))
+
+
 def test_excluded_crop_counts_splits_above_inside_and_below():
     image = np.asarray([[1.0], [2.0], [3.0], [4.0]])
     result = planar_qspect_crop.estimate_excluded_crop_counts(
@@ -99,3 +131,49 @@ def test_geometric_mean_alignment_option_flips_pa_horizontally():
 
     np.testing.assert_allclose(historical, [[3.0, 8.0]])
     np.testing.assert_allclose(aligned, [[4.0, 6.0]])
+
+
+def test_crop_profile_registration_recovers_vertical_shift():
+    reference = np.zeros((160,), dtype=float)
+    reference[30:50] = 1.0
+    reference[95:115] = 0.6
+    moving = np.zeros_like(reference)
+    moving[37:57] = 1.0
+    moving[102:122] = 0.6
+
+    result = compare_crop_methods.estimate_planar_longitudinal_shift(
+        reference,
+        moving,
+        max_shift_px=15,
+    )
+
+    assert result["shift_y_px"] == 7
+    assert result["correlation"] == pytest.approx(1.0)
+
+
+def test_registered_crop_translation_preserves_height_at_edges():
+    assert compare_crop_methods.translate_crop_bounds((20, 70), 10, 100) == (30, 80)
+    assert compare_crop_methods.translate_crop_bounds((20, 70), -40, 100) == (0, 50)
+    assert compare_crop_methods.translate_crop_bounds((40, 90), 40, 100) == (50, 100)
+
+
+def test_silhouette_shift_accepts_consistent_body_edges():
+    reference = {"top": 100, "bottom": 900, "length": 800}
+    moving = {"top": 84, "bottom": 884, "length": 800}
+
+    result = compare_crop_methods.estimate_silhouette_shift(reference, moving)
+
+    assert result["raw_shift_y_px"] == -16
+    assert result["shift_y_px"] == -16
+    assert result["accepted"] is True
+
+
+def test_silhouette_shift_falls_back_when_body_is_incomplete():
+    reference = {"top": 100, "bottom": 900, "length": 800}
+    moving = {"top": 150, "bottom": 550, "length": 400}
+
+    result = compare_crop_methods.estimate_silhouette_shift(reference, moving)
+
+    assert result["raw_shift_y_px"] == -150
+    assert result["shift_y_px"] == 0
+    assert result["accepted"] is False
