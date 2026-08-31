@@ -368,6 +368,62 @@ def calculate_imaging_excretion_comparison(
     return rows
 
 
+def calculate_qspect_reference_ratios(
+    data: Dict[str, Any],
+    balance: Dict[str, np.ndarray],
+    imaging: Dict[str, np.ndarray],
+) -> List[Dict[str, Any]]:
+    """Calculate planar/QSPECT and excretion-balance/QSPECT at QSPECT times.
+
+    Planar activities are propagated from the planar acquisition time to the
+    paired Q/SPECT time using physical decay only.  The urine-derived body
+    activity is evaluated from collection intervals completed by the Q/SPECT
+    time.  It is unavailable before the first completed collection.
+    """
+    half_life_h = float(data["half_life_h"])
+    qspect_times_h = np.asarray(imaging["qspect_times_h"], dtype=float)
+    planar_times_h = np.asarray(imaging["planar_times_h"], dtype=float)
+    qspect_mbq = np.asarray(imaging["qspect_mbq"], dtype=float)
+    planar_mbq = np.asarray(imaging["planar_ctac_mbq"], dtype=float)
+    planar_at_qspect_mbq = planar_mbq * decay_factor(
+        qspect_times_h - planar_times_h, half_life_h
+    )
+    balance_at_qspect_mbq = predicted_body_activity(qspect_times_h, data, balance)
+    first_collection_h = float(balance["times_h"][0])
+    last_collection_h = float(balance["times_h"][-1])
+
+    rows: List[Dict[str, Any]] = []
+    for index, label in enumerate(imaging["labels"]):
+        balance_available = bool(qspect_times_h[index] >= first_collection_h)
+        rows.append(
+            {
+                "label": str(label),
+                "planar_time_h": float(planar_times_h[index]),
+                "qspect_time_h": float(qspect_times_h[index]),
+                "planar_activity_mbq": float(planar_mbq[index]),
+                "planar_at_qspect_time_mbq": float(planar_at_qspect_mbq[index]),
+                "qspect_activity_mbq": float(qspect_mbq[index]),
+                "mass_balance_at_qspect_time_mbq": float(
+                    balance_at_qspect_mbq[index]
+                )
+                if balance_available
+                else math.nan,
+                "planar_over_qspect": float(
+                    planar_at_qspect_mbq[index] / qspect_mbq[index]
+                ),
+                "mass_balance_over_qspect": float(
+                    balance_at_qspect_mbq[index] / qspect_mbq[index]
+                )
+                if balance_available
+                else math.nan,
+                "after_last_urine_collection": bool(
+                    qspect_times_h[index] > last_collection_h
+                ),
+            }
+        )
+    return rows
+
+
 def _style_axis(axis: plt.Axes) -> None:
     axis.grid(True, linestyle="--", alpha=0.3)
     axis.spines["top"].set_visible(False)
@@ -430,7 +486,8 @@ def plot_mass_balance(
         ([data["injected_activity_mbq"]], balance["physical_available_mbq"])
     )
     excreted = np.concatenate(([0.0], balance["cumulative_excreted_at_time_mbq"]))
-    body = np.concatenate(([data["injected_activity_mbq"]], balance["predicted_body_mbq"]))
+    body_times = balance["times_h"]
+    body = balance["predicted_body_mbq"]
     fig, axis = plt.subplots(figsize=(8.2, 5.4), facecolor="white", layout="constrained")
     axis.plot(
         times,
@@ -450,7 +507,7 @@ def plot_mass_balance(
         label="Activité excrétée cumulative, ramenée au temps considéré",
     )
     axis.plot(
-        times,
+        body_times,
         body,
         color="#2ca02c",
         marker="s",
@@ -477,7 +534,8 @@ def plot_mass_balance_vs_imaging(
         float(imaging["planar_times_h"].max()),
         float(imaging["qspect_times_h"].max()),
     )
-    curve_times = np.linspace(0.0, maximum_time, 900)
+    first_collection = float(balance["times_h"][0])
+    curve_times = np.linspace(first_collection, maximum_time, 900)
     predicted_curve = predicted_body_activity(curve_times, data, balance)
     last_collection = float(balance["times_h"][-1])
 
@@ -655,6 +713,66 @@ def plot_mass_balance_closure(
     return output_path
 
 
+def plot_qspect_reference_ratios(
+    ratio_rows: List[Dict[str, Any]],
+    last_collection_h: float,
+    output_path: Path,
+) -> Path:
+    """Plot planar and urine-balance body activities relative to Q/SPECT."""
+    qspect_times_h = np.asarray(
+        [row["qspect_time_h"] for row in ratio_rows], dtype=float
+    )
+    planar_ratios = np.asarray(
+        [row["planar_over_qspect"] for row in ratio_rows], dtype=float
+    )
+    balance_ratios = np.asarray(
+        [row["mass_balance_over_qspect"] for row in ratio_rows], dtype=float
+    )
+    labels = [row["label"] for row in ratio_rows]
+    maximum_time = float(qspect_times_h.max())
+
+    fig, axis = plt.subplots(figsize=(8.4, 5.4), facecolor="white", layout="constrained")
+    axis.axvspan(
+        last_collection_h,
+        maximum_time,
+        color="#7f7f7f",
+        alpha=0.08,
+        label="Après 46,62 h : excrétion additionnelle non mesurée",
+    )
+    axis.axhline(
+        1.0,
+        color="black",
+        linestyle="--",
+        linewidth=1.4,
+        label="Accord avec le Q/SPECT",
+    )
+    axis.plot(
+        qspect_times_h,
+        planar_ratios,
+        color="#1f77b4",
+        marker="s",
+        linewidth=2.0,
+        label="Planaire CTAC / Q/SPECT",
+    )
+    axis.plot(
+        qspect_times_h,
+        balance_ratios,
+        color="#2ca02c",
+        marker="o",
+        linewidth=2.0,
+        label="Bilan d'excrétion / Q/SPECT",
+    )
+    axis.set_xticks(qspect_times_h, labels)
+    axis.set_xlabel("Temps du Q/SPECT après l'injection")
+    axis.set_ylabel("Rapport d'activité relatif au Q/SPECT")
+    axis.set_title("Activités planaire et bilan d'excrétion relatives au Q/SPECT")
+    axis.legend(frameon=False, fontsize=8)
+    _style_axis(axis)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
 def _write_rows(path: Path, rows: List[Dict[str, Any]], fieldnames: List[str]) -> Path:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -738,6 +856,14 @@ def write_imaging_excretion_values(
     return _write_rows(output_path, comparison_rows, list(comparison_rows[0]))
 
 
+def write_qspect_reference_ratios(
+    ratio_rows: List[Dict[str, Any]], output_dir: Path
+) -> Path:
+    """Save the Q/SPECT-reference ratios shown in the ratio figure."""
+    output_path = output_dir / "qspect_reference_ratio_values.csv"
+    return _write_rows(output_path, ratio_rows, list(ratio_rows[0]))
+
+
 def write_report(
     data: Dict[str, Any],
     balance: Dict[str, np.ndarray],
@@ -819,6 +945,11 @@ def sang_urine(
         if imaging is not None
         else None
     )
+    ratio_rows = (
+        calculate_qspect_reference_ratios(data, balance, imaging)
+        if imaging is not None
+        else None
+    )
 
     paths: Dict[str, Path] = {
         "blood_figure": plot_blood_clearance(
@@ -849,8 +980,16 @@ def sang_urine(
             float(balance["times_h"][-1]),
             output_dir / "mass_balance_closure_planar_qspect.png",
         )
+        paths["qspect_reference_ratio_figure"] = plot_qspect_reference_ratios(
+            ratio_rows,
+            float(balance["times_h"][-1]),
+            output_dir / "qspect_reference_activity_ratios.png",
+        )
         paths["imaging_excretion_values"] = write_imaging_excretion_values(
             comparison_rows, output_dir
+        )
+        paths["qspect_reference_ratio_values"] = write_qspect_reference_ratios(
+            ratio_rows, output_dir
         )
     paths["report"] = write_report(
         data,
@@ -864,6 +1003,7 @@ def sang_urine(
         "balance": balance,
         "imaging": imaging,
         "comparison_rows": comparison_rows,
+        "ratio_rows": ratio_rows,
         "paths": paths,
     }
 

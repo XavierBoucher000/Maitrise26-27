@@ -61,3 +61,24 @@ def test_imaging_excretion_closure_ratio_uses_same_time_reference():
     rows = sang_urine.calculate_imaging_excretion_comparison(data, balance, imaging)
 
     assert all(row["mass_balance_closure_ratio"] == pytest.approx(1.0) for row in rows)
+
+
+def test_qspect_reference_ratios_equal_one_for_matching_activities():
+    data = sang_urine.load_sang_urine_csv()
+    balance = sang_urine.calculate_urine_mass_balance(data)
+    times = np.asarray([2.28, 22.95])
+    predicted = sang_urine.predicted_body_activity(times, data, balance)
+    imaging = {
+        "labels": np.asarray(["A", "B"]),
+        "planar_times_h": times,
+        "qspect_times_h": times,
+        "planar_ctac_mbq": predicted,
+        "qspect_mbq": predicted,
+    }
+
+    rows = sang_urine.calculate_qspect_reference_ratios(data, balance, imaging)
+
+    assert all(row["planar_over_qspect"] == pytest.approx(1.0) for row in rows)
+    assert all(
+        row["mass_balance_over_qspect"] == pytest.approx(1.0) for row in rows
+    )
