@@ -5,6 +5,7 @@ import ct_attenuation_correction as ctac
 import planar_qspect_crop
 import attenuation_correction
 import compare_crop_methods
+import crop_excluded_counts_test
 
 
 def test_raystation_density_matches_nodes_and_clamps_outside_range():
@@ -177,3 +178,25 @@ def test_silhouette_shift_falls_back_when_body_is_incomplete():
     assert result["raw_shift_y_px"] == -150
     assert result["shift_y_px"] == 0
     assert result["accepted"] is False
+
+
+def test_recovered_crop_activity_adds_outside_counts_without_attenuation():
+    rows = [
+        {
+            "day_offset": 0.0,
+            "local_dwell_time_s": 10.0,
+            "ctac_local_activity_mbq": 5.0,
+            "qspect_activity_mbq": 3.0,
+            "crop_excluded_counts": {
+                "masked_counts": {"outside": 93.6},
+                "positive_counts": {"outside": 187.2},
+            },
+        }
+    ]
+
+    result = crop_excluded_counts_test.calculate_recovered_activity(rows)[0]
+
+    assert result["recovered_outside_no_attenuation_mbq"] == pytest.approx(1.0)
+    assert result["recovered_outside_positive_no_attenuation_mbq"] == pytest.approx(2.0)
+    assert result["hybrid_activity_mbq"] == pytest.approx(6.0)
+    assert result["hybrid_over_qspect"] == pytest.approx(2.0)
