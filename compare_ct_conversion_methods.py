@@ -1,6 +1,6 @@
 """Compare the original and RayStation/material CT-to-mu conversions.
 
-Outputs are written to ``fig/ct_conversion_comparison``. The activity
+Outputs are written to ``fig/HU_conversion_comparison``. The activity
 comparison deliberately reuses a fixed Day-0 planar crop for every time point,
 so the CT conversion is the only changed correction setting.
 """
@@ -15,9 +15,13 @@ import attenuation_correction
 import ct_attenuation_correction as ctac
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "ct_conversion_comparison"
+OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "HU_conversion_comparison"
 ALIGN_PA_TO_AP = True
 CALIBRATION_FIGURE = OUTPUT_DIR / "raystation_hu_to_mass_density.png"
+RAYSTATION_SINGLE_CURVE_FIGURE = (
+    OUTPUT_DIR / "raystation_hu_to_mass_density_single_curve.png"
+)
+PROJECT_CALIBRATION_FIGURE = OUTPUT_DIR / "hu_to_mass_density_calibration_used.png"
 ACTIVITY_FIGURE = OUTPUT_DIR / "ctac_fixed_crop_conversion_comparison.png"
 TEMPORAL_DIFFERENCE_FIGURE = OUTPUT_DIR / "ctac_conversion_difference_over_time.png"
 VALUES_FILE = OUTPUT_DIR / "ctac_conversion_comparison_values.csv"
@@ -57,6 +61,116 @@ def plot_hu_to_density_calibration(output_path: Path = CALIBRATION_FIGURE) -> Pa
     axes[1].set_xlim(-1050, 1000)
     axes[1].set_ylim(0.0, 1.7)
     fig.suptitle("Calibration CT : HU vers densité massique", fontsize=16)
+    _save_png_svg(fig, output_path)
+    return output_path
+
+
+def plot_raystation_hu_to_density_single_curve(
+    output_path: Path = RAYSTATION_SINGLE_CURVE_FIGURE,
+) -> Path:
+    """Plot the RayStation HU-density calibration in one full-range panel."""
+    hu_nodes = np.asarray(ctac.RAYSTATION_HU_NODES, dtype=float)
+    density_nodes = np.asarray(ctac.RAYSTATION_MASS_DENSITY_G_CM3, dtype=float)
+    hu_curve = np.linspace(hu_nodes[0], hu_nodes[-1], 3000)
+    density_curve = ctac.raystation_hu_to_mass_density_g_cm3(hu_curve)
+
+    fig, ax = plt.subplots(figsize=(8.6, 5.6), facecolor="white")
+    ax.plot(
+        hu_curve,
+        density_curve,
+        color="#1f77b4",
+        linewidth=2.4,
+        label="Interpolation linéaire par segments",
+        zorder=2,
+    )
+    ax.scatter(
+        hu_nodes,
+        density_nodes,
+        color="#d62728",
+        edgecolor="white",
+        linewidth=0.7,
+        s=58,
+        label="Points de calibration RayStation",
+        zorder=3,
+    )
+    ax.set_title("Calibration RayStation : HU vers densité massique")
+    ax.set_xlabel("Unité Hounsfield (HU)")
+    ax.set_ylabel("Densité massique (g/cm³)")
+    ax.set_xlim(hu_nodes[0] - 120.0, hu_nodes[-1] + 120.0)
+    ax.set_ylim(0.0, float(density_nodes.max()) * 1.08)
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(frameon=False, loc="upper left")
+    ax.text(
+        0.98,
+        0.05,
+        "11 points — interpolation entre les valeurs de la table",
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=8.5,
+        color="#555555",
+    )
+    _save_png_svg(fig, output_path)
+    return output_path
+
+
+def plot_project_hu_to_density_calibration(
+    output_path: Path = PROJECT_CALIBRATION_FIGURE,
+) -> Path:
+    """Plot the original simple water-scaled HU conversion as density."""
+    hu_curve = np.linspace(-1000.0, 4000.0, 3000)
+    mu_curve = ctac.hu_to_mu_208_cm_inv(hu_curve)
+    density_equivalent = mu_curve / ctac.MU_WATER_208_CM_INV
+    reference_hu = np.asarray([-1000.0, 0.0, 1000.0, 4000.0])
+    reference_density = (
+        ctac.hu_to_mu_208_cm_inv(reference_hu) / ctac.MU_WATER_208_CM_INV
+    )
+
+    fig, ax = plt.subplots(figsize=(8.6, 5.6), facecolor="white")
+    ax.plot(
+        hu_curve,
+        density_equivalent,
+        color="#1f77b4",
+        linewidth=2.4,
+        label="Conversion simple utilisée",
+        zorder=2,
+    )
+    ax.scatter(
+        reference_hu,
+        reference_density,
+        color="#d62728",
+        edgecolor="white",
+        linewidth=0.7,
+        s=58,
+        label="Valeurs de référence",
+        zorder=3,
+    )
+    ax.set_title("Conversion simple : HU vers densité équivalente à l'eau")
+    ax.set_xlabel("Unité Hounsfield (HU)")
+    ax.set_ylabel("Densité équivalente à l'eau (g/cm³)")
+    ax.set_xlim(-1100.0, 4120.0)
+    ax.set_ylim(0.0, float(reference_density.max()) * 1.08)
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(frameon=False, loc="upper left")
+    ax.text(
+        0.97,
+        0.08,
+        (
+            r"$\rho_{eq}(HU)=\max\left[0,\,1+\frac{HU}{1000}\right]$"
+            "\n"
+            r"$\mu_{208}=0{,}135\,\rho_{eq}$  (cm$^{-1}$)"
+        ),
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=11,
+        color="#333333",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "alpha": 0.9, "edgecolor": "#bbbbbb"},
+    )
     _save_png_svg(fig, output_path)
     return output_path
 
@@ -160,6 +274,8 @@ def write_values(values: Dict[str, np.ndarray], output_path: Path = VALUES_FILE)
 def run_comparison() -> Dict[str, Any]:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     calibration_path = plot_hu_to_density_calibration()
+    raystation_single_curve_path = plot_raystation_hu_to_density_single_curve()
+    project_calibration_path = plot_project_hu_to_density_calibration()
     old_rows = attenuation_correction.ct_attenuation_correction_rows(
         crop_strategy="fixed_day0", conversion_method="water_scaled",
         align_pa_to_ap=ALIGN_PA_TO_AP,
@@ -174,6 +290,8 @@ def run_comparison() -> Dict[str, Any]:
     values_path = write_values(values)
 
     print(f"Saved HU-density calibration: {calibration_path}")
+    print(f"Saved single-curve RayStation calibration: {raystation_single_curve_path}")
+    print(f"Saved project HU-density calibration: {project_calibration_path}")
     print(f"Saved fixed-crop CTAC comparison: {activity_path}")
     print(f"Saved CTAC/Q-SPECT ratios over time: {difference_path}")
     print(f"Saved numerical values: {values_path}")
@@ -182,6 +300,8 @@ def run_comparison() -> Dict[str, Any]:
         "new_rows": new_rows,
         "values": values,
         "calibration_path": calibration_path,
+        "raystation_single_curve_path": raystation_single_curve_path,
+        "project_calibration_path": project_calibration_path,
         "activity_path": activity_path,
         "difference_path": difference_path,
         "values_path": values_path,
