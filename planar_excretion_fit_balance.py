@@ -665,7 +665,7 @@ def run_planar_excretion_fit_balance(
     balance = sang_urine.calculate_urine_mass_balance(data)
     imaging = sang_urine.load_imaging_comparison(data["injection_datetime"])
     if imaging is None:
-        raise FileNotFoundError("The fixed-J0 planar activity table is unavailable")
+        raise FileNotFoundError("The profile-crop planar activity data are unavailable")
     fits = fit_planar_and_excretion(data, balance, imaging)
     cross_balances = calculate_cross_time_balances(fits)
     paths = {

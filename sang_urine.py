@@ -266,9 +266,41 @@ def _dicom_datetime(study_date: str, acquisition_time: str) -> datetime:
 def load_imaging_comparison(
     injection_datetime: datetime,
     imaging_csv: Path = DEFAULT_IMAGING_CSV,
-    crop_method: str = "fixed_j0",
+    crop_method: str = "profile_qspect",
 ) -> Optional[Dict[str, np.ndarray]]:
-    """Load fixed-crop CTAC/QSPECT activities and their exact acquisition times."""
+    """Load profile-crop CTAC/QSPECT activities and exact acquisition times."""
+    if crop_method == "profile_qspect":
+        ctac_rows = ac.ct_attenuation_correction_rows(crop_strategy="profile_qspect")
+        qspect_series = qspect_processing.load_qspect_study(
+            qspect_processing.default_qspect_dir()
+        )
+        qspect_by_label = {
+            item["label"]: item["acquisition_datetime"] for item in qspect_series
+        }
+        return {
+            "labels": np.asarray([row["qspect_label"] for row in ctac_rows]),
+            "planar_times_h": np.asarray(
+                [
+                    (row["datetime"] - injection_datetime).total_seconds() / 3600.0
+                    for row in ctac_rows
+                ]
+            ),
+            "qspect_times_h": np.asarray(
+                [
+                    (
+                        qspect_by_label[row["qspect_label"]] - injection_datetime
+                    ).total_seconds()
+                    / 3600.0
+                    for row in ctac_rows
+                ]
+            ),
+            "planar_ctac_mbq": np.asarray(
+                [float(row["ctac_local_activity_mbq"]) for row in ctac_rows]
+            ),
+            "qspect_mbq": np.asarray(
+                [float(row["qspect_activity_mbq"]) for row in ctac_rows]
+            ),
+        }
     imaging_csv = Path(imaging_csv)
     if not imaging_csv.exists():
         return None
@@ -326,7 +358,7 @@ def calculate_imaging_excretion_comparison(
     last_collection_h = float(balance["times_h"][-1])
     modalities = (
         (
-            "planar_ctac_fixed_j0",
+            "planar_ctac_profile_qspect",
             imaging["planar_times_h"],
             imaging["planar_ctac_mbq"],
         ),
@@ -572,7 +604,7 @@ def plot_mass_balance_vs_imaging(
         marker="s",
         linewidth=1.8,
         markersize=6,
-        label="Planaire CTAC — crop fixe J0",
+        label="Planaire CTAC — crop par profils",
         zorder=3,
     )
     axis.plot(
@@ -642,7 +674,7 @@ def plot_excreted_activity_vs_imaging(
         color="#1f77b4",
         marker="s",
         s=48,
-        label="Activité corporelle planaire CTAC — crop fixe J0",
+        label="Activité corporelle planaire CTAC — crop par profils",
         zorder=3,
     )
     axis.scatter(
@@ -687,7 +719,9 @@ def plot_mass_balance_closure(
         label="Fermeture idéale du bilan",
     )
     styles = {
-        "planar_ctac_fixed_j0": ("Planaire CTAC — crop fixe J0", "#1f77b4", "s"),
+        "planar_ctac_profile_qspect": (
+            "Planaire CTAC — crop par profils", "#1f77b4", "s"
+        ),
         "qspect": ("Q/SPECT", "black", "D"),
     }
     for modality, (label, color, marker) in styles.items():

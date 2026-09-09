@@ -1,6 +1,12 @@
 import numpy as np
+import pytest
 
 import planar_qspect_profile_crop as profile_crop
+
+
+def test_shared_profile_crop_resolver_requires_complete_pairs():
+    with pytest.raises(ValueError, match="one Q/SPECT acquisition per planar scan"):
+        profile_crop.resolve_profile_crop_matches([{}], [{}, {}])
 
 
 def test_profile_crop_recovers_known_translation_and_passes_qc():

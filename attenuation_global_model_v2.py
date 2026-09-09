@@ -8,7 +8,7 @@ planar activity estimation:
     M_eff = 2 * log(C_eff)
 
 CT is used only to create the development target.  Deployment inputs are
-emission-only global spectral ratios over one fixed planar crop.  The primary
+emission-only global spectral ratios over the profile-matched planar crop. The primary
 model excludes elapsed time, absolute photopeak intensity, Q/SPECT activity,
 and the broad 55.45--166.35 keV window.
 
@@ -227,6 +227,7 @@ def build_global_dataset(
     planar_dir: Path = planar_processing.default_planar_study_dir(),
     ct_root: Path = qspect_processing.default_qspect_dir(),
     crop_bounds: Tuple[int, int] = (141, 609),
+    crop_strategy: str = "profile_qspect",
     conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> Dict[str, Any]:
     """Create one global observation per acquisition day."""
@@ -235,6 +236,7 @@ def build_global_dataset(
         scans,
         ct_root,
         crop_bounds=crop_bounds,
+        crop_strategy=crop_strategy,
         conversion_method=conversion_method,
     )
     if len(scans) != len(ct_rows) or len(scans) < 4:
@@ -243,10 +245,10 @@ def build_global_dataset(
     spectral_rows = [
         global_spectral_features(
             scan,
-            crop_bounds,
+            (int(ct_row["crop_top"]), int(ct_row["crop_bottom"])),
             require_broad_low_energy=True,
         )
-        for scan in scans
+        for scan, ct_row in zip(scans, ct_rows)
     ]
     primary_features = np.asarray(
         [
@@ -280,7 +282,15 @@ def build_global_dataset(
         "target_optical_depth": target_optical_depth,
         "feature_names": PRIMARY_FEATURE_NAMES,
         "broad_feature_names": ALL_FEATURE_NAMES,
-        "crop_bounds": tuple(int(value) for value in crop_bounds),
+        # The saved inference fallback uses the Day0 profile crop. Training and
+        # validation use the per-day bounds below.
+        "crop_bounds": (
+            int(ct_rows[0]["crop_top"]), int(ct_rows[0]["crop_bottom"])
+        ),
+        "crop_strategy": crop_strategy,
+        "crop_bounds_by_day": [
+            (int(row["crop_top"]), int(row["crop_bottom"])) for row in ct_rows
+        ],
         "planar_dir": Path(planar_dir),
         "ct_root": Path(ct_root),
     }
@@ -684,6 +694,11 @@ def write_report(
         "Validation:",
         "  Outer leave-one-day-out; alpha selected by inner LOO on outer-training days only.",
         "  Each day contributes one observation; patches are not treated as independent samples.",
+        f"  Crop strategy = {dataset['crop_strategy']}.",
+        "  Crop bounds by day = " + ", ".join(
+            f"{row['day_label']}[{row['crop_top']}:{row['crop_bottom']}]"
+            for row in dataset["ct_rows"]
+        ),
         "",
     ]
     lines.extend(
@@ -762,7 +777,9 @@ def write_report(
             "  - Model variants were examined on these same five days; reported errors remain exploratory.",
             "  - The broad 55.45-166.35 keV channel is an ablation, not pure scatter.",
             "  - Dead-time/pile-up correction is not applied; count-rate QC is reported instead.",
-            "  - CT-to-planar mapping remains approximate resizing rather than DICOM registration.",
+            "  - CT-to-planar mapping remains approximate resizing inside each profile-matched crop.",
+            "  - Q/SPECT supplies crop geometry during development; an emission-only crop localizer",
+            "    is still required for deployment without Q/SPECT.",
             f"  - CT target conversion = {dataset['ct_rows'][0]['ct_conversion_method']}.",
             "  - The default Catphan T2 curve is provisional until the QC reconstruction matches the patient ACCT protocol.",
             "  - A new patient requires external validation before this factor can be used quantitatively.",
@@ -868,6 +885,7 @@ def run_model(
     planar_dir: Path | None = None,
     ct_root: Path | None = None,
     crop_bounds: Tuple[int, int] = (141, 609),
+    crop_strategy: str = "profile_qspect",
     alpha_grid: Sequence[float] = DEFAULT_ALPHA_GRID,
     conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> Dict[str, Any]:
@@ -878,6 +896,7 @@ def run_model(
         planar_dir=(planar_dir or planar_processing.default_planar_study_dir()),
         ct_root=(ct_root or qspect_processing.default_qspect_dir()),
         crop_bounds=crop_bounds,
+        crop_strategy=crop_strategy,
         conversion_method=conversion_method,
     )
     day_labels = [row["day_label"] for row in dataset["ct_rows"]]
@@ -963,6 +982,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--crop-top", type=int, default=141)
     parser.add_argument("--crop-bottom", type=int, default=609)
+    parser.add_argument(
+        "--crop-strategy",
+        choices=("profile_qspect", "fixed"),
+        default="profile_qspect",
+    )
     parser.add_argument("--planar-dir", type=Path)
     parser.add_argument("--ct-root", type=Path)
     parser.add_argument(
@@ -985,6 +1009,7 @@ if __name__ == "__main__":
         planar_dir=arguments.planar_dir,
         ct_root=arguments.ct_root,
         crop_bounds=(arguments.crop_top, arguments.crop_bottom),
+        crop_strategy=arguments.crop_strategy,
         alpha_grid=arguments.alpha_grid,
         conversion_method=arguments.ct_conversion_method,
     )

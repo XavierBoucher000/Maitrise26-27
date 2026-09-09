@@ -421,9 +421,39 @@ def calculate_matches(
     qspect_dir = qspect_processing.default_qspect_dir()
     scans = ac.sorted_planar_scans(planar_dir)
     qspect_series = qspect_processing.load_qspect_study(qspect_dir)
+    return resolve_profile_crop_matches(
+        scans,
+        qspect_series,
+        max_shift_cm=max_shift_cm,
+        smoothing_sigma_cm=smoothing_sigma_cm,
+        initial_crop_bounds=initial_crop_bounds,
+        threshold_fraction=threshold_fraction,
+        align_pa_to_ap=align_pa_to_ap,
+    )
+
+
+def resolve_profile_crop_matches(
+    scans: Sequence[Dict[str, Any]],
+    qspect_series: Sequence[Dict[str, Any]],
+    max_shift_cm: float = MAX_SHIFT_CM,
+    smoothing_sigma_cm: float = SMOOTHING_SIGMA_CM,
+    initial_crop_bounds: Optional[Tuple[int, int]] = None,
+    threshold_fraction: float = planar_qspect_crop.PLANAR_QSPECT_CROP_THRESHOLD,
+    align_pa_to_ap: bool = True,
+) -> List[Dict[str, Any]]:
+    """Resolve one QC-controlled profile crop for every paired acquisition.
+
+    This is the shared crop-strategy entry point used by CTAC, sensitivity and
+    model-building code. Consumers should use these returned rows instead of
+    rebuilding the Day0 seed and per-day matching themselves.
+    """
     count = min(len(scans), len(qspect_series))
     if count == 0:
         raise ValueError("No paired planar/Q/SPECT acquisitions were found")
+    if len(scans) != len(qspect_series):
+        raise ValueError(
+            "Profile cropping requires one Q/SPECT acquisition per planar scan"
+        )
 
     if initial_crop_bounds is None:
         seed_top, seed_bottom = day0_initial_crop(
@@ -440,7 +470,7 @@ def calculate_matches(
             raise ValueError(f"Invalid initial crop bounds: {initial_crop_bounds}")
         initial_position_source = "external_mechanical_calibration"
     initial_center_y = 0.5 * (seed_top + seed_bottom)
-    offsets = qspect_processing.day_offsets(qspect_series[:count])
+    offsets = qspect_processing.day_offsets(list(qspect_series[:count]))
     rows = [
         match_one_pair(
             scans[index],

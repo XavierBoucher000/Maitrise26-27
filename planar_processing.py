@@ -311,10 +311,6 @@ def planar_timing_from_dicom(
     raise ValueError("ScanVelocity and ScanLength are required to estimate WB scan timing")
 
 
-def acquisition_scan_time_from_velocity_seconds(images: List[Dict[str, Any]]) -> float:
-    return planar_timing_from_dicom(images).scan_time_s
-
-
 def counts_to_activity_mbq(
     counts: float,
     duration_seconds: float,

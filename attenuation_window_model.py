@@ -46,18 +46,18 @@ independent patients, so results only demonstrate within-patient feasibility.
 
 Known development limitations
 -----------------------------
-The current CT reference inherits an approximate CT-to-planar resize.  The default
-crop ``[141:609]`` is a fixed, patient-specific development crop selected before
-this model is run.  Q/SPECT is not used to build the dataset.  Geometry-aware
-registration and an emission-derived field of view remain necessary before the
-method can be applied to a new patient.
+The current CT reference inherits an approximate CT-to-planar resize. During
+development, the default crop uses the Q/SPECT physical coverage and bounded
+longitudinal-profile matching for each timepoint. Q/SPECT defines geometry only;
+its activity is not a regression target. An emission-only crop localizer remains
+necessary before the method can be applied to a new patient without Q/SPECT.
 """
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib
 
@@ -70,6 +70,7 @@ import attenuation_correction as ac
 import ct_attenuation_correction as ctac
 import dicom_loader
 import planar_processing
+import planar_qspect_profile_crop
 import qspect_processing
 from plots import view_patient_images
 
@@ -427,13 +428,28 @@ def load_ct_for_planar_scan(ct_root: Path, scan: Dict[str, Any]) -> Dict[str, An
 def build_ct_reference_rows(
     scans: Sequence[Dict[str, Any]],
     ct_root: Path,
-    crop_bounds: Tuple[int, int] = (141, 609),
+    crop_bounds: Optional[Tuple[int, int]] = None,
+    crop_strategy: str = "profile_qspect",
     conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> List[Dict[str, Any]]:
-    """Build raw-ACCT reference rows without loading Q/SPECT data."""
-    crop_top, crop_bottom = (int(crop_bounds[0]), int(crop_bounds[1]))
-    if crop_top < 0 or crop_bottom <= crop_top:
-        raise ValueError(f"Invalid fixed crop bounds: {crop_bounds}")
+    """Build raw-ACCT reference rows using profile crops by default."""
+    if crop_strategy not in {"profile_qspect", "fixed"}:
+        raise ValueError("crop_strategy must be 'profile_qspect' or 'fixed'")
+    fixed_bounds: Optional[Tuple[int, int]] = None
+    profile_matches: Optional[List[Dict[str, Any]]] = None
+    if crop_strategy == "fixed":
+        if crop_bounds is None:
+            raise ValueError("crop_bounds are required with crop_strategy='fixed'")
+        fixed_bounds = (int(crop_bounds[0]), int(crop_bounds[1]))
+        if fixed_bounds[0] < 0 or fixed_bounds[1] <= fixed_bounds[0]:
+            raise ValueError(f"Invalid fixed crop bounds: {crop_bounds}")
+    else:
+        qspect_series = qspect_processing.load_qspect_study(ct_root)
+        profile_matches = planar_qspect_profile_crop.resolve_profile_crop_matches(
+            scans,
+            qspect_series,
+            align_pa_to_ap=planar_processing.ALIGN_PA_TO_AP,
+        )
 
     rows: List[Dict[str, Any]] = []
     first_datetime = next(
@@ -441,11 +457,18 @@ def build_ct_reference_rows(
         None,
     )
     for day_index, scan in enumerate(scans):
+        match = None if profile_matches is None else profile_matches[day_index]
+        if match is None:
+            assert fixed_bounds is not None
+            crop_top, crop_bottom = fixed_bounds
+        else:
+            crop_top = int(match["crop_top"])
+            crop_bottom = int(match["crop_bottom"])
         planar_result = ac.tew_geometric_mean_for_scan(scan)
         full_planar = _positive_array(planar_result["image"])
         if crop_bottom > full_planar.shape[0]:
             raise ValueError(
-                f"Crop {crop_bounds} exceeds planar height {full_planar.shape[0]} "
+                f"Crop {(crop_top, crop_bottom)} exceeds planar height {full_planar.shape[0]} "
                 f"for {scan['scan_name']}"
         )
         planar_crop = full_planar[crop_top:crop_bottom, :]
@@ -495,7 +518,7 @@ def build_ct_reference_rows(
                 "datetime": scan_datetime,
                 "crop_top": crop_top,
                 "crop_bottom": crop_bottom,
-                "crop_strategy": "fixed_patient_crop",
+                "crop_strategy": crop_strategy,
                 "planar_crop": planar_crop,
                 "planar_crop_counts": planar_crop_counts,
                 "ctac_crop_counts": ctac_crop_counts,
@@ -513,6 +536,12 @@ def build_ct_reference_rows(
                 "ct_conversion_method": conversion_method,
                 "ct_conversion_protocol_limitation": ct_map.get(
                     "protocol_limitation"
+                ),
+                "profile_match_correlation": (
+                    np.nan if match is None else float(match["correlation"])
+                ),
+                "profile_match_accepted": (
+                    None if match is None else bool(match["match_accepted"])
                 ),
             }
         )
@@ -565,7 +594,8 @@ def build_dataset(
     patch_shape: Tuple[int, int] = (16, 8),
     mask_threshold_fraction: float = 0.005,
     minimum_valid_fraction: float = 0.25,
-    crop_bounds: Tuple[int, int] = (141, 609),
+    crop_bounds: Optional[Tuple[int, int]] = None,
+    crop_strategy: str = "profile_qspect",
     include_qspect_reference: bool = False,
     conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> Dict[str, Any]:
@@ -575,6 +605,7 @@ def build_dataset(
         scans,
         ct_root,
         crop_bounds=crop_bounds,
+        crop_strategy=crop_strategy,
         conversion_method=conversion_method,
     )
     if include_qspect_reference:
@@ -603,8 +634,13 @@ def build_dataset(
         "patch_shape": patch_shape,
         "mask_threshold_fraction": mask_threshold_fraction,
         "minimum_valid_fraction": minimum_valid_fraction,
-        "crop_strategy": "fixed_patient_crop",
-        "crop_bounds": crop_bounds,
+        "crop_strategy": crop_strategy,
+        "crop_bounds": (
+            int(ct_rows[0]["crop_top"]), int(ct_rows[0]["crop_bottom"])
+        ),
+        "crop_bounds_by_day": [
+            (int(row["crop_top"]), int(row["crop_bottom"])) for row in ct_rows[:count]
+        ],
         "include_qspect_reference": include_qspect_reference,
     }
 
@@ -1055,7 +1091,10 @@ def write_report(
         "",
         "Configuration:",
         f"  crop_strategy = {dataset['crop_strategy']}",
-        f"  crop_bounds = y[{dataset['crop_bounds'][0]}:{dataset['crop_bounds'][1]}]",
+        "  crop_bounds_by_day = " + ", ".join(
+            f"{row['day_label']}[{row['crop_top']}:{row['crop_bottom']}]"
+            for row in dataset["ct_rows"]
+        ),
         f"  patch_shape = {dataset['patch_shape'][0]} x {dataset['patch_shape'][1]} pixels",
         f"  mask_threshold_fraction = {dataset['mask_threshold_fraction']:.4f}",
         f"  minimum_valid_fraction = {dataset['minimum_valid_fraction']:.3f}",
@@ -1281,7 +1320,8 @@ def run_model(
     mask_threshold_fraction: float = 0.005,
     minimum_valid_fraction: float = 0.25,
     alpha: float = 10.0,
-    crop_bounds: Tuple[int, int] = (141, 609),
+    crop_bounds: Optional[Tuple[int, int]] = None,
+    crop_strategy: str = "profile_qspect",
     include_qspect_reference: bool = False,
     conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> Dict[str, Any]:
@@ -1292,6 +1332,7 @@ def run_model(
         mask_threshold_fraction=mask_threshold_fraction,
         minimum_valid_fraction=minimum_valid_fraction,
         crop_bounds=crop_bounds,
+        crop_strategy=crop_strategy,
         include_qspect_reference=include_qspect_reference,
         conversion_method=conversion_method,
     )
@@ -1342,6 +1383,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alpha", type=float, default=10.0)
     parser.add_argument("--crop-top", type=int, default=141)
     parser.add_argument("--crop-bottom", type=int, default=609)
+    parser.add_argument(
+        "--crop-strategy",
+        choices=("profile_qspect", "fixed"),
+        default="profile_qspect",
+    )
     parser.add_argument("--planar-dir", type=Path)
     parser.add_argument("--ct-root", type=Path)
     parser.add_argument(
@@ -1367,6 +1413,7 @@ if __name__ == "__main__":
         minimum_valid_fraction=arguments.minimum_valid_fraction,
         alpha=arguments.alpha,
         crop_bounds=(arguments.crop_top, arguments.crop_bottom),
+        crop_strategy=arguments.crop_strategy,
         include_qspect_reference=arguments.include_qspect_reference,
         conversion_method=arguments.ct_conversion_method,
     )

@@ -5,7 +5,7 @@ Transformation sequence
 1. Convert CT HU to mu at 208 keV.
 2. Integrate mu along the assumed AP/PA axis to obtain a 2D optical-depth map.
 3. Assign the projected CT map its physical SI/LR spacing.
-4. Center the CT and fixed Day-0 planar crop in one 2D physical frame.
+4. Center the CT and profile-matched planar crop in one 2D physical frame.
 5. Optionally blur the optical-depth map in millimetres.
 6. Resample optical depth onto the planar grid with SimpleITK linear interpolation.
 7. Form F_CT = exp(optical_depth / 2), apply it to the planar crop, and compare
@@ -62,7 +62,7 @@ def compare_ct_planar_resampling(
     current_rows = ac.ct_attenuation_correction_rows(
         planar_dir=planar_dir,
         qspect_dir=qspect_dir,
-        crop_strategy="fixed_day0",
+        crop_strategy="profile_qspect",
         conversion_method=conversion_method,
         align_pa_to_ap=True,
     )
@@ -151,7 +151,7 @@ def plot_day0_map_comparison(
     )
     _, planar_max = _positive_limits(planar)
     axes[0, 0].imshow(planar, cmap="magma", vmin=0.0, vmax=planar_max, aspect="auto")
-    axes[0, 0].set_title("Planar TEW GM — crop fixe J0")
+    axes[0, 0].set_title("Planar TEW GM — crop par profils")
 
     factor_min = float(min(current_factor.min(), physical_factor.min()))
     factor_max = float(np.percentile(np.concatenate([current_factor.ravel(), physical_factor.ravel()]), 99.5))
@@ -251,7 +251,7 @@ def write_outputs(rows: List[Dict[str, Any]]) -> tuple[Path, Path]:
         "  1. CT HU -> mu_208.",
         "  2. AP/PA integration -> 2D optical depth.",
         "  3. CT physical spacing assigned to the projection.",
-        "  4. CT and fixed Day0 crop centered in a common 2D frame.",
+        "  4. CT and profile-matched crop centered in a common 2D frame.",
         "  5. Optional physical Gaussian blur.",
         "  6. SimpleITK linear resampling onto the planar physical grid.",
         "  7. F_CT = exp(optical_depth / 2), then pixel-wise CTAC.",

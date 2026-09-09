@@ -15,9 +15,9 @@ FIGURE_PATH = OUTPUT_DIR / "ctac_ap_pa_alignment_option_comparison.png"
 VALUES_PATH = OUTPUT_DIR / "ctac_ap_pa_alignment_option_values.csv"
 
 
-def fixed_crop_rows(align_pa_to_ap: bool) -> List[Dict[str, Any]]:
+def profile_crop_rows(align_pa_to_ap: bool) -> List[Dict[str, Any]]:
     return attenuation_correction.ct_attenuation_correction_rows(
-        crop_strategy="fixed_day0",
+        crop_strategy="profile_qspect",
         conversion_method=ctac.DEFAULT_CT_CONVERSION_METHOD,
         align_pa_to_ap=align_pa_to_ap,
     )
@@ -49,7 +49,7 @@ def plot_comparison(
         label="align_pa_to_ap=True",
     )
     axes[0].set_ylabel("Activité estimée (MBq)")
-    axes[0].set_title("CTAC planaire — crop fixe Day 0")
+    axes[0].set_title("CTAC planaire — crop par profils")
 
     axes[1].axhline(1.0, color="black", linestyle="--", linewidth=1.4, label="Accord Q/SPECT")
     axes[1].plot(
@@ -109,8 +109,8 @@ def write_values(
 
 
 def run_comparison() -> Dict[str, Any]:
-    historical_rows = fixed_crop_rows(False)
-    aligned_rows = fixed_crop_rows(True)
+    historical_rows = profile_crop_rows(False)
+    aligned_rows = profile_crop_rows(True)
     figure_path = plot_comparison(historical_rows, aligned_rows)
     values_path = write_values(historical_rows, aligned_rows)
     print(f"Saved AP/PA option comparison: {figure_path}")

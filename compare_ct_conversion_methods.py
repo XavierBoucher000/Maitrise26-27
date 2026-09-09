@@ -1,7 +1,7 @@
 """Compare three development CT HU-to-mu conversions.
 
 Outputs are written to ``fig/HU_conversion_comparison``. The activity
-comparison deliberately reuses a fixed Day-0 planar crop for every time point,
+comparison deliberately reuses the profile-matched planar crop for every conversion,
 so the CT conversion is the only changed correction setting. The direct T2
 Catphan curve is provisional because its QC reconstruction (B41s, 8 mm) does
 not exactly match the patient ACCT reconstruction (B08s, 5 mm).
@@ -26,7 +26,7 @@ RAYSTATION_SINGLE_CURVE_FIGURE = (
 PROJECT_CALIBRATION_FIGURE = OUTPUT_DIR / "hu_to_mass_density_calibration_used.png"
 CATPHAN_CALIBRATION_FIGURE = OUTPUT_DIR / "catphan_t2_110kvp_hu_to_mu2084.png"
 CATPHAN_VALUES_FILE = OUTPUT_DIR / "catphan_t2_110kvp_hu_to_mu2084_values.csv"
-ACTIVITY_FIGURE = OUTPUT_DIR / "ctac_fixed_crop_conversion_comparison.png"
+ACTIVITY_FIGURE = OUTPUT_DIR / "ctac_profile_crop_conversion_comparison.png"
 TEMPORAL_DIFFERENCE_FIGURE = OUTPUT_DIR / "ctac_conversion_difference_over_time.png"
 VALUES_FILE = OUTPUT_DIR / "ctac_conversion_comparison_values.csv"
 
@@ -312,10 +312,10 @@ def _paired_arrays(
     }
 
 
-def plot_fixed_crop_activity_comparison(
+def plot_profile_crop_activity_comparison(
     values: Dict[str, np.ndarray], output_path: Path = ACTIVITY_FIGURE
 ) -> Path:
-    """Plot fixed-crop planar CTAC while varying only HU-to-mu conversion."""
+    """Plot profile-crop planar CTAC while varying only HU-to-mu conversion."""
     fig, ax = plt.subplots(figsize=(8.2, 5.2), facecolor="white")
     ax.plot(values["days"], values["qspect"], "^-", linewidth=2, label="Q/SPECT")
     ax.plot(
@@ -330,7 +330,7 @@ def plot_fixed_crop_activity_comparison(
         values["days"], values["catphan_ctac"], "D-", linewidth=2,
         label="CTAC — courbe Catphan T2 (provisoire)",
     )
-    ax.set_title("CTAC planaire — crop fixe Day 0")
+    ax.set_title("CTAC planaire — crop par profils")
     ax.set_xlabel("Temps après la première acquisition (jours)")
     ax.set_ylabel("Activité estimée (MBq)")
     ax.grid(True, linestyle="--", alpha=0.3)
@@ -344,7 +344,7 @@ def plot_fixed_crop_activity_comparison(
 def plot_temporal_conversion_difference(
     values: Dict[str, np.ndarray], output_path: Path = TEMPORAL_DIFFERENCE_FIGURE
 ) -> Path:
-    """Compare each fixed-crop CTAC estimate with Q/SPECT over time."""
+    """Compare each profile-crop CTAC estimate with Q/SPECT over time."""
     old_over_qspect = values["old_ctac"] / values["qspect"]
     new_over_qspect = values["new_ctac"] / values["qspect"]
     catphan_over_qspect = values["catphan_ctac"] / values["qspect"]
@@ -363,7 +363,7 @@ def plot_temporal_conversion_difference(
         values["days"], catphan_over_qspect, "D-", color="tab:blue", linewidth=2,
         label="Catphan T2 / Q/SPECT (provisoire)",
     )
-    ax.set_title("Ratio CTAC planaire / Q/SPECT — crop fixe Day 0")
+    ax.set_title("Ratio CTAC planaire / Q/SPECT — crop par profils")
     ax.set_xlabel("Temps après la première acquisition (jours)")
     ax.set_ylabel("Ratio d'activité CTAC planaire / Q/SPECT")
     ax.grid(True, linestyle="--", alpha=0.3)
@@ -397,7 +397,7 @@ def write_values(values: Dict[str, np.ndarray], output_path: Path = VALUES_FILE)
         matrix,
         delimiter=",",
         header=(
-            "day,planar_fixed_crop_mbq,qspect_mbq,ctac_old_mbq,ctac_raystation_materials_mbq,"
+            "day,planar_profile_crop_mbq,qspect_mbq,ctac_old_mbq,ctac_raystation_materials_mbq,"
             "ctac_catphan_t2_mbq,effective_factor_old,effective_factor_raystation_materials,"
             "effective_factor_catphan_t2,ctac_old_over_qspect,"
             "ctac_raystation_materials_over_qspect,ctac_catphan_t2_over_qspect,"
@@ -419,19 +419,19 @@ def run_comparison() -> Dict[str, Any]:
     catphan_calibration_path = plot_catphan_t2_hu_to_mu_calibration()
     catphan_values_path = write_catphan_calibration_values()
     old_rows = attenuation_correction.ct_attenuation_correction_rows(
-        crop_strategy="fixed_day0", conversion_method="water_scaled",
+        crop_strategy="profile_qspect", conversion_method="water_scaled",
         align_pa_to_ap=ALIGN_PA_TO_AP,
     )
     new_rows = attenuation_correction.ct_attenuation_correction_rows(
-        crop_strategy="fixed_day0", conversion_method="raystation_materials",
+        crop_strategy="profile_qspect", conversion_method="raystation_materials",
         align_pa_to_ap=ALIGN_PA_TO_AP,
     )
     catphan_rows = attenuation_correction.ct_attenuation_correction_rows(
-        crop_strategy="fixed_day0", conversion_method="catphan_t2_110kvp",
+        crop_strategy="profile_qspect", conversion_method="catphan_t2_110kvp",
         align_pa_to_ap=ALIGN_PA_TO_AP,
     )
     values = _paired_arrays(old_rows, new_rows, catphan_rows)
-    activity_path = plot_fixed_crop_activity_comparison(values)
+    activity_path = plot_profile_crop_activity_comparison(values)
     difference_path = plot_temporal_conversion_difference(values)
     values_path = write_values(values)
 
@@ -440,7 +440,7 @@ def run_comparison() -> Dict[str, Any]:
     print(f"Saved project HU-density calibration: {project_calibration_path}")
     print(f"Saved provisional Catphan HU-mu calibration: {catphan_calibration_path}")
     print(f"Saved provisional Catphan calibration values: {catphan_values_path}")
-    print(f"Saved fixed-crop CTAC comparison: {activity_path}")
+    print(f"Saved profile-crop CTAC comparison: {activity_path}")
     print(f"Saved CTAC/Q-SPECT ratios over time: {difference_path}")
     print(f"Saved numerical values: {values_path}")
     return {

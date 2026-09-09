@@ -581,10 +581,6 @@ def normalized_positive_image(image: np.ndarray) -> np.ndarray:
     return image / maximum
 
 
-def image_y_profile(image: np.ndarray) -> np.ndarray:
-    return normalized_positive_image(image).mean(axis=1)
-
-
 def weighted_center_of_mass_y(image: np.ndarray) -> float:
     image = normalized_positive_image(image)
     weights = image.sum(axis=1)
@@ -735,22 +731,12 @@ def ct_attenuation_correction_rows(
         # the TEW/GM and CTAC helpers defined in this module.
         import planar_qspect_profile_crop as profile_crop
 
-        seed_top, seed_bottom = profile_crop.day0_initial_crop(
-            planar_scans[0],
-            qspect_series[0],
+        profile_matches = profile_crop.resolve_profile_crop_matches(
+            planar_scans,
+            qspect_series,
             threshold_fraction=threshold_fraction,
             align_pa_to_ap=align_pa_to_ap,
         )
-        initial_center_y = 0.5 * (seed_top + seed_bottom)
-        profile_matches = [
-            profile_crop.match_one_pair(
-                planar_scans[index],
-                qspect_series[index],
-                initial_center_y=initial_center_y,
-                align_pa_to_ap=align_pa_to_ap,
-            )
-            for index in range(count)
-        ]
     elif crop_strategy == "fixed_day0":
         day0_row = ct_attenuation_correct_scan(
             planar_scans[0],
@@ -1486,7 +1472,9 @@ def run_ct_attenuation_correction(
     return rows
 
 
-def build_attenuation_experiment(images: List[Dict[str, Any]], strength: float = 0.25) -> Dict[str, Any]:
+def build_legacy_proxy_experiment(
+    images: List[Dict[str, Any]], strength: float = 0.25
+) -> Dict[str, Any]:
     groups = group_by_energy_and_view(images)
     photo = groups.get("Photopeak")
     if not photo or "AP" not in photo or "PA" not in photo:
@@ -1511,7 +1499,9 @@ def build_attenuation_experiment(images: List[Dict[str, Any]], strength: float =
     }
 
 
-def plot_attenuation_experiment(result: Dict[str, Any], title: str = "Attenuation experiment") -> None:
+def plot_legacy_proxy_experiment(
+    result: Dict[str, Any], title: str = "Legacy attenuation proxy experiment"
+) -> None:
     images: List[Tuple[str, Optional[np.ndarray]]] = [
         ("Photopeak geometric mean", result["photopeak_geometric_mean"]),
         ("AP/PA asymmetry", result["ap_pa_asymmetry"]),
@@ -1550,24 +1540,30 @@ def print_method_ideas() -> None:
     print("  6. Best option: derive a body contour/thickness or CT attenuation map, then apply a physics-based correction.")
 
 
-def run_attenuation_experiment(scan_dir: Path, strength: float = 0.25) -> None:
+def run_legacy_proxy_experiment(scan_dir: Path, strength: float = 0.25) -> None:
     images = dicom_loader.load_scan_directory(scan_dir)
-    result = build_attenuation_experiment(images, strength=strength)
+    result = build_legacy_proxy_experiment(images, strength=strength)
     print_method_ideas()
     print("Geometric mean counts:")
     for label, value in result["counts"].items():
         print(f"  {label}: {value:.1f}")
-    plot_attenuation_experiment(result, title=scan_dir.name)
+    plot_legacy_proxy_experiment(result, title=scan_dir.name)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1].lower() in {"baseline", "katt", "model"}:
+    command = sys.argv[1].lower() if len(sys.argv) > 1 else "ct"
+    if command in {"baseline", "katt", "model"}:
         threshold = float(sys.argv[2]) if len(sys.argv) > 2 else 0.01
         run_one_patient_katt_baseline(body_mask_threshold_fraction=threshold)
-    elif len(sys.argv) > 1 and sys.argv[1].lower() in {"ct", "ctac", "correction_ct", "ct_correction"}:
+    elif command in {"ct", "ctac", "correction_ct", "ct_correction"}:
         threshold = float(sys.argv[2]) if len(sys.argv) > 2 else PLANAR_QSPECT_CROP_THRESHOLD
         run_ct_attenuation_correction(threshold_fraction=threshold)
-    else:
+    elif command in {"legacy-proxy", "proxy"}:
         default_scan = planar_processing.default_rapid_scan_dir()
         path = Path(default_scan)
-        run_attenuation_experiment(path)
+        run_legacy_proxy_experiment(path)
+    else:
+        raise SystemExit(
+            "Usage: python attenuation_correction.py "
+            "[ct|baseline|legacy-proxy] [threshold]"
+        )

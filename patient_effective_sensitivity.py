@@ -35,6 +35,7 @@ import attenuation_correction as ac
 import dicom_loader
 import planar_processing
 import planar_qspect_crop
+import planar_qspect_profile_crop
 import qspect_processing
 
 
@@ -198,15 +199,17 @@ def _emission_images(
 def calculate_patient_effective_sensitivity(
     planar_dir: Path = planar_processing.default_planar_study_dir(),
     qspect_dir: Path = qspect_processing.default_qspect_dir(),
-    crop_strategy: str = "fixed_day0",
+    crop_strategy: str = "profile_qspect",
     threshold_fraction: float = planar_qspect_crop.PLANAR_QSPECT_CROP_THRESHOLD,
     align_pa_to_ap: bool = planar_processing.ALIGN_PA_TO_AP,
     half_life_h: float = LU177_PHYSICAL_HALF_LIFE_H,
     max_time_difference_h: float = 6.0,
 ) -> List[Dict[str, Any]]:
     """Calculate raw and TEW effective sensitivities without loading any CT."""
-    if crop_strategy not in {"fixed_day0", "individual"}:
-        raise ValueError("crop_strategy must be 'fixed_day0' or 'individual'")
+    if crop_strategy not in {"profile_qspect", "fixed_day0", "individual"}:
+        raise ValueError(
+            "crop_strategy must be 'profile_qspect', 'fixed_day0' or 'individual'"
+        )
 
     planar_scans = ac.sorted_planar_scans(Path(planar_dir))
     qspect_series = qspect_processing.load_qspect_study(Path(qspect_dir))
@@ -227,6 +230,14 @@ def calculate_patient_effective_sensitivity(
         raise ValueError("First planar acquisition time is unavailable")
 
     fixed_bounds: Optional[Tuple[int, int]] = None
+    profile_matches: Optional[List[Dict[str, Any]]] = None
+    if crop_strategy == "profile_qspect":
+        profile_matches = planar_qspect_profile_crop.resolve_profile_crop_matches(
+            [scan for scan, _qspect, _images in prepared],
+            [qspect for _scan, qspect, _images in prepared],
+            threshold_fraction=threshold_fraction,
+            align_pa_to_ap=align_pa_to_ap,
+        )
     if crop_strategy == "fixed_day0":
         first_scan, first_qspect, first_images = prepared[0]
         first_record = {
@@ -259,13 +270,19 @@ def calculate_patient_effective_sensitivity(
             "images": scan["images"],
             "correction": {"corrected_image": {"image": images["tew_gm"]}},
         }
+        selected_bounds = fixed_bounds
+        match = None if profile_matches is None else profile_matches[index]
+        if match is not None:
+            selected_bounds = (int(match["crop_top"]), int(match["crop_bottom"]))
         crop = planar_qspect_crop.compute_planar_crop_for_qspect(
             images["tew_gm"],
             planar_record,
             qspect,
             threshold_fraction=threshold_fraction,
-            fixed_crop_bounds=fixed_bounds,
+            fixed_crop_bounds=selected_bounds,
         )
+        if match is not None:
+            crop["crop_strategy"] = "profile_qspect"
         top = int(crop["crop_top"])
         bottom = int(crop["crop_bottom"])
         raw_counts = float(np.sum(images["raw_gm"][top:bottom, :]))
@@ -322,6 +339,12 @@ def calculate_patient_effective_sensitivity(
                 "ct_attenuation_correction_applied": False,
                 "dead_time_correction_applied": False,
                 "align_pa_to_ap": bool(align_pa_to_ap),
+                "profile_match_correlation": (
+                    np.nan if match is None else float(match["correlation"])
+                ),
+                "profile_match_accepted": (
+                    None if match is None else bool(match["match_accepted"])
+                ),
             }
         )
     return rows
@@ -411,8 +434,8 @@ def write_report(
     lines.extend(
         [
             "Interpretation limits:",
-            "  - fixed_day0 uses a Q/SPECT-informed approximate crop until a scanner-coordinate",
-            "    or marker-derived planar-to-SPECT z mapping is available.",
+            "  - profile_qspect fixes the Q/SPECT physical coverage and translates it",
+            "    by bounded longitudinal-profile correlation with automatic QC fallback.",
             "  - physical decay matching does not correct biological clearance during the",
             "    time gap between planar and Q/SPECT acquisitions.",
             "  - changes across time can also arise from count-rate losses, redistribution,",
@@ -539,7 +562,7 @@ def run_patient_effective_sensitivity(
     qspect_dir: Path = qspect_processing.default_qspect_dir(),
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     patient_label: str = DEFAULT_PATIENT_LABEL,
-    crop_strategy: str = "fixed_day0",
+    crop_strategy: str = "profile_qspect",
     align_pa_to_ap: bool = planar_processing.ALIGN_PA_TO_AP,
 ) -> Dict[str, Any]:
     """Run the complete one-patient analysis and save its reusable outputs."""
@@ -593,8 +616,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--patient-label", default=DEFAULT_PATIENT_LABEL)
     parser.add_argument(
         "--crop-strategy",
-        choices=("fixed_day0", "individual"),
-        default="fixed_day0",
+        choices=("profile_qspect", "fixed_day0", "individual"),
+        default="profile_qspect",
     )
     parser.add_argument(
         "--align-pa-to-ap",

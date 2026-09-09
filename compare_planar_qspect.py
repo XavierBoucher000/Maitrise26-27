@@ -154,11 +154,6 @@ def fit_monoexponential(day_offsets: List[float], values: List[float]) -> Dict[s
     }
 
 
-def fit_exponential_half_life(day_offsets: List[float], values: List[float]) -> Dict[str, Any]:
-    """Backward-compatible alias for the monoexponential fit."""
-    return fit_monoexponential(day_offsets, values)
-
-
 def fit_biexponential(day_offsets: List[float], values: List[float]) -> Dict[str, Any]:
     """Fit A(t) = A1 * exp(-lambda1 * t) + A2 * exp(-lambda2 * t), with t in days."""
     x, y = clean_fit_data(day_offsets, values)

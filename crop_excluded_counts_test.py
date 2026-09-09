@@ -1,4 +1,4 @@
-"""Test whether the fixed Day-0 crop excludes a negligible planar fraction."""
+"""Test whether the profile-matched crop excludes a negligible planar fraction."""
 
 from pathlib import Path
 from typing import Any, Dict, List
@@ -13,20 +13,20 @@ import planar_processing
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "crop_test"
 ALIGN_PA_TO_AP = True
-FIGURE_PATH = OUTPUT_DIR / "fixed_crop_excluded_counts_over_time.png"
-VALUES_PATH = OUTPUT_DIR / "fixed_crop_excluded_counts_values.csv"
+FIGURE_PATH = OUTPUT_DIR / "profile_crop_excluded_counts_over_time.png"
+VALUES_PATH = OUTPUT_DIR / "profile_crop_excluded_counts_values.csv"
 RECOVERED_ACTIVITY_FIGURE_PATH = (
-    OUTPUT_DIR / "fixed_crop_recovered_activity_without_attenuation.png"
+    OUTPUT_DIR / "profile_crop_recovered_activity_without_attenuation.png"
 )
 RECOVERED_ACTIVITY_VALUES_PATH = (
-    OUTPUT_DIR / "fixed_crop_recovered_activity_without_attenuation_values.csv"
+    OUTPUT_DIR / "profile_crop_recovered_activity_without_attenuation_values.csv"
 )
 
 
-def collect_fixed_crop_excluded_counts() -> List[Dict[str, Any]]:
-    """Run the existing fixed-Day0 pipeline and return its crop diagnostics."""
+def collect_profile_crop_excluded_counts() -> List[Dict[str, Any]]:
+    """Run the profile-matched pipeline and return its crop diagnostics."""
     return attenuation_correction.ct_attenuation_correction_rows(
-        crop_strategy="fixed_day0",
+        crop_strategy="profile_qspect",
         conversion_method=ctac.DEFAULT_CT_CONVERSION_METHOD,
         align_pa_to_ap=ALIGN_PA_TO_AP,
     )
@@ -53,7 +53,7 @@ def plot_excluded_counts(
     axes[0].plot(days, outside, "^-", linewidth=2.2, label="Total retiré")
     axes[0].axhline(5.0, color="0.35", linestyle="--", linewidth=1.2, label="Repère exploratoire 5 %")
     axes[0].set_ylabel("Comptes corporels retirés (%)")
-    axes[0].set_title("Effet du crop fixe Day 0 sur les comptes planaires")
+    axes[0].set_title("Effet du crop par profils sur les comptes planaires")
     axes[0].legend(frameon=False)
 
     axes[1].plot(days, retained, "o-", linewidth=2.2, label="Conservé — masque 1 %")
@@ -169,7 +169,7 @@ def plot_recovered_activity(
     axes[0].plot(days, qspect, "D-", color="black", linewidth=2.0, label="Q/SPECT")
     axes[0].plot(
         days, ctac, "s-", color="#1f77b4", linewidth=2.0,
-        label="Planaire CTAC — crop fixe J0",
+        label="Planaire CTAC — crop par profils",
     )
     axes[0].plot(
         days, hybrid, "o-", color="#ff7f0e", linewidth=2.2,
@@ -220,7 +220,7 @@ def write_recovered_activity_values(
 
 
 def run_test() -> Dict[str, Any]:
-    rows = collect_fixed_crop_excluded_counts()
+    rows = collect_profile_crop_excluded_counts()
     figure_path = plot_excluded_counts(rows)
     values_path = write_values(rows)
     recovered_values = calculate_recovered_activity(rows)

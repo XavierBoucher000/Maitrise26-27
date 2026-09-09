@@ -2,7 +2,7 @@
 
 The comparison deliberately keeps the following elements identical:
 
-* fixed Day0 planar crop;
+* profile-matched planar crop;
 * CT attenuation-factor map;
 * local dwell time and camera sensitivity;
 * paired Q/SPECT activity used only for evaluation.
@@ -76,7 +76,7 @@ def compare_tew_methods(
     reference_rows = ac.ct_attenuation_correction_rows(
         planar_dir,
         qspect_dir,
-        crop_strategy="fixed_day0",
+        crop_strategy="profile_qspect",
     )
 
     if len(scans) != len(reference_rows):
@@ -184,7 +184,7 @@ def write_report(rows: List[Dict[str, float]]) -> Path:
         "====================================================",
         "",
         "Common settings:",
-        "  - fixed Day0 crop",
+        "  - profile-matched Q/SPECT-length crop",
         "  - identical CT attenuation-factor map",
         "  - identical local dwell time and camera sensitivity",
         "  - no dead-time correction in this CTAC comparison",
@@ -256,7 +256,7 @@ def plot_activity_comparison(rows: List[Dict[str, float]]) -> Path:
     ax.plot(values["day"], values["qspect"], "^-", color="tab:red", label="Q/SPECT")
     ax.set_xlabel("Temps après la première acquisition (jours)", labelpad=10)
     ax.set_ylabel("Activité estimée (MBq)")
-    ax.set_title("Activité finale — crop fixe Day0")
+    ax.set_title("Activité finale — crop par profils")
     ax.grid(alpha=0.3)
     ax.legend()
     fig.tight_layout(pad=1.2)
@@ -287,7 +287,7 @@ def plot_tew_effect(rows: List[Dict[str, float]]) -> Path:
     )
     ax.set_xlabel("Temps après la première acquisition (jours)", labelpad=10)
     ax.set_ylabel("Variation par rapport à sans TEW (%)")
-    ax.set_title("Effet de la correction TEW — crop fixe Day0")
+    ax.set_title("Effet de la correction TEW — crop par profils")
     ax.grid(alpha=0.3)
     ax.legend()
     fig.tight_layout(pad=1.2)

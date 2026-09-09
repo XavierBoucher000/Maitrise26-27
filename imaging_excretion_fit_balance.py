@@ -355,7 +355,7 @@ def run_imaging_excretion_fit_balance(
     balance = sang_urine.calculate_urine_mass_balance(data)
     imaging = sang_urine.load_imaging_comparison(data["injection_datetime"])
     if imaging is None:
-        raise FileNotFoundError("The fixed-J0 planar/QSPECT table is unavailable")
+        raise FileNotFoundError("The profile-crop planar/QSPECT data are unavailable")
 
     planar = calculate_modality_balance(data, balance, imaging, "planar")
     qspect = calculate_modality_balance(data, balance, imaging, "qspect")
