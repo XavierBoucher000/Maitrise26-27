@@ -60,5 +60,5 @@ def test_planar_and_qspect_use_same_excretion_fit_but_exact_imaging_times():
     assert day0_qspect["elapsed_h"] == pytest.approx(
         imaging["qspect_times_h"][0]
     )
-    assert day0_planar["closure_error_percent"] == pytest.approx(1.5395, abs=1e-3)
+    assert day0_planar["closure_error_percent"] == pytest.approx(3.7468, abs=1e-3)
     assert day0_qspect["closure_error_percent"] == pytest.approx(8.0468, abs=1e-3)

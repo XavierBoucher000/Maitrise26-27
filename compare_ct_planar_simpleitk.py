@@ -51,7 +51,7 @@ def _positive_limits(image: np.ndarray, percentile: float = 99.5) -> tuple[float
 
 
 def compare_ct_planar_resampling(
-    conversion_method: str = "water_scaled",
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
     blur_fwhm_mm: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """Return current-resize and SimpleITK CTAC results for all five time points."""
@@ -287,8 +287,8 @@ def main() -> None:
     parser = ArgumentParser(description=__doc__)
     parser.add_argument(
         "--conversion-method",
-        choices=("water_scaled", "raystation_materials"),
-        default="water_scaled",
+        choices=("water_scaled", "raystation_materials", "catphan_t2_110kvp"),
+        default=ctac.DEFAULT_CT_CONVERSION_METHOD,
     )
     parser.add_argument(
         "--blur-fwhm-mm",

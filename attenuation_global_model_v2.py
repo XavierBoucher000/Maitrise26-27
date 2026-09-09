@@ -44,6 +44,7 @@ import numpy as np
 
 import attenuation_correction as ac
 import attenuation_window_model as patch_model
+import ct_attenuation_correction as ctac
 import planar_processing
 import qspect_processing
 
@@ -226,6 +227,7 @@ def build_global_dataset(
     planar_dir: Path = planar_processing.default_planar_study_dir(),
     ct_root: Path = qspect_processing.default_qspect_dir(),
     crop_bounds: Tuple[int, int] = (141, 609),
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> Dict[str, Any]:
     """Create one global observation per acquisition day."""
     scans = ac.sorted_planar_scans(planar_dir)
@@ -233,6 +235,7 @@ def build_global_dataset(
         scans,
         ct_root,
         crop_bounds=crop_bounds,
+        conversion_method=conversion_method,
     )
     if len(scans) != len(ct_rows) or len(scans) < 4:
         raise ValueError("At least four paired planar/raw-ACCT days are required")
@@ -760,7 +763,8 @@ def write_report(
             "  - The broad 55.45-166.35 keV channel is an ablation, not pure scatter.",
             "  - Dead-time/pile-up correction is not applied; count-rate QC is reported instead.",
             "  - CT-to-planar mapping remains approximate resizing rather than DICOM registration.",
-            "  - HU-to-mu conversion remains a water-scaled development approximation.",
+            f"  - CT target conversion = {dataset['ct_rows'][0]['ct_conversion_method']}.",
+            "  - The default Catphan T2 curve is provisional until the QC reconstruction matches the patient ACCT protocol.",
             "  - A new patient requires external validation before this factor can be used quantitatively.",
             "",
         ]
@@ -865,6 +869,7 @@ def run_model(
     ct_root: Path | None = None,
     crop_bounds: Tuple[int, int] = (141, 609),
     alpha_grid: Sequence[float] = DEFAULT_ALPHA_GRID,
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> Dict[str, Any]:
     alpha_grid = tuple(float(alpha) for alpha in alpha_grid)
     if not alpha_grid or any(alpha < 0.0 for alpha in alpha_grid):
@@ -873,6 +878,7 @@ def run_model(
         planar_dir=(planar_dir or planar_processing.default_planar_study_dir()),
         ct_root=(ct_root or qspect_processing.default_qspect_dir()),
         crop_bounds=crop_bounds,
+        conversion_method=conversion_method,
     )
     day_labels = [row["day_label"] for row in dataset["ct_rows"]]
     day_offsets = [row["day_offset"] for row in dataset["ct_rows"]]
@@ -960,6 +966,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--planar-dir", type=Path)
     parser.add_argument("--ct-root", type=Path)
     parser.add_argument(
+        "--ct-conversion-method",
+        choices=("water_scaled", "raystation_materials", "catphan_t2_110kvp"),
+        default=ctac.DEFAULT_CT_CONVERSION_METHOD,
+    )
+    parser.add_argument(
         "--alpha-grid",
         type=float,
         nargs="+",
@@ -975,4 +986,5 @@ if __name__ == "__main__":
         ct_root=arguments.ct_root,
         crop_bounds=(arguments.crop_top, arguments.crop_bottom),
         alpha_grid=arguments.alpha_grid,
+        conversion_method=arguments.ct_conversion_method,
     )

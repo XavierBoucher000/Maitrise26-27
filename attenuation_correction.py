@@ -515,7 +515,7 @@ def plot_one_patient_katt_validation(
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    plt.show()
+    plt.close(fig)
     return output_path
 
 
@@ -619,7 +619,7 @@ def ct_attenuation_correct_scan(
     qspect_dir: Path,
     threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
     fixed_crop_bounds: Optional[Tuple[int, int]] = None,
-    conversion_method: str = "water_scaled",
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
     align_pa_to_ap: bool = ALIGN_PA_TO_AP,
 ) -> Dict[str, Any]:
     planar_result = tew_geometric_mean_for_scan(
@@ -688,6 +688,18 @@ def ct_attenuation_correct_scan(
         "ct_factor_map": ct_correction["ct_map"]["factor_map"],
         "ct_mu_integral": ct_correction["ct_map"]["mu_integral"],
         "ct_factor_stats": ct_correction["ct_factor_stats"],
+        "ct_conversion_outside_calibration_fraction": ct_correction["ct_map"].get(
+            "outside_calibration_fraction", np.nan
+        ),
+        "ct_conversion_below_calibration_fraction": ct_correction["ct_map"].get(
+            "below_calibration_fraction", np.nan
+        ),
+        "ct_conversion_above_calibration_fraction": ct_correction["ct_map"].get(
+            "above_calibration_fraction", np.nan
+        ),
+        "ct_conversion_protocol_limitation": ct_correction["ct_map"].get(
+            "protocol_limitation"
+        ),
         "ct_coronal_center_hu": ct_projection_qc["coronal_center_hu"],
         "ct_mean_projection_hu": ct_projection_qc["mean_projection_hu"],
         "ctac_crop": ct_correction["ctac_crop"],
@@ -706,8 +718,8 @@ def ct_attenuation_correction_rows(
     planar_dir: Path = planar_processing.default_planar_study_dir(),
     qspect_dir: Path = qspect_processing.default_qspect_dir(),
     threshold_fraction: float = PLANAR_QSPECT_CROP_THRESHOLD,
-    crop_strategy: str = "individual",
-    conversion_method: str = "water_scaled",
+    crop_strategy: str = "profile_qspect",
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
     align_pa_to_ap: bool = ALIGN_PA_TO_AP,
 ) -> List[Dict[str, Any]]:
     planar_scans = sorted_planar_scans(planar_dir)
@@ -717,7 +729,29 @@ def ct_attenuation_correction_rows(
         raise ValueError("No paired planar/QSPECT acquisitions available")
 
     fixed_crop_bounds = None
-    if crop_strategy == "fixed_day0":
+    profile_matches = None
+    if crop_strategy == "profile_qspect":
+        # Local import avoids a module-level cycle: the profile module reuses
+        # the TEW/GM and CTAC helpers defined in this module.
+        import planar_qspect_profile_crop as profile_crop
+
+        seed_top, seed_bottom = profile_crop.day0_initial_crop(
+            planar_scans[0],
+            qspect_series[0],
+            threshold_fraction=threshold_fraction,
+            align_pa_to_ap=align_pa_to_ap,
+        )
+        initial_center_y = 0.5 * (seed_top + seed_bottom)
+        profile_matches = [
+            profile_crop.match_one_pair(
+                planar_scans[index],
+                qspect_series[index],
+                initial_center_y=initial_center_y,
+                align_pa_to_ap=align_pa_to_ap,
+            )
+            for index in range(count)
+        ]
+    elif crop_strategy == "fixed_day0":
         day0_row = ct_attenuation_correct_scan(
             planar_scans[0],
             qspect_series[0],
@@ -730,18 +764,41 @@ def ct_attenuation_correction_rows(
     elif crop_strategy != "individual":
         raise ValueError(f"Unknown crop strategy: {crop_strategy}")
 
-    rows = [
-        ct_attenuation_correct_scan(
+    rows = []
+    for index in range(count):
+        selected_bounds = fixed_crop_bounds
+        if profile_matches is not None:
+            selected_bounds = (
+                int(profile_matches[index]["crop_top"]),
+                int(profile_matches[index]["crop_bottom"]),
+            )
+        row = ct_attenuation_correct_scan(
             planar_scans[index],
             qspect_series[index],
             qspect_dir,
             threshold_fraction,
-            fixed_crop_bounds=fixed_crop_bounds,
+            fixed_crop_bounds=selected_bounds,
             conversion_method=conversion_method,
             align_pa_to_ap=align_pa_to_ap,
         )
-        for index in range(count)
-    ]
+        row["crop_strategy"] = crop_strategy
+        if profile_matches is not None:
+            match = profile_matches[index]
+            row.update(
+                {
+                    "profile_match_correlation": float(match["correlation"]),
+                    "profile_match_peak_margin": float(match["peak_margin"]),
+                    "profile_match_peak_width_cm": float(match["peak_width_cm"]),
+                    "profile_match_accepted": bool(match["match_accepted"]),
+                    "profile_match_rejection_reasons": list(match["rejection_reasons"]),
+                    "profile_match_shift_cm": float(match["shift_cm"]),
+                    "profile_match_proposed_shift_cm": float(
+                        match["proposed_shift_cm"]
+                    ),
+                    "profile_match_initial_position_source": "existing_day0_crop",
+                }
+            )
+        rows.append(row)
     first_datetime = next((row["datetime"] for row in rows if row["datetime"] is not None), None)
     for index, row in enumerate(rows):
         if row["datetime"] is not None and first_datetime is not None:
@@ -781,11 +838,14 @@ def write_ct_attenuation_correction_report(
         "  - When enabled, PA is horizontally flipped into the AP patient orientation.",
         "  - Dead-time correction is not applied in this CT-correction experiment.",
         f"  - Crop strategy = {rows[0].get('crop_strategy', 'unknown')}.",
-        "  - Individual crop uses the imaging test-match rule: threshold 0.1, planar center of mass, Q/SPECT head-side gap.",
-        "  - Fixed_day0 crop reuses Day0 crop coordinates for every time point.",
+        "  - Default profile_qspect crop fixes the physical length from Q/SPECT and",
+        "    translates it along the planar image by bounded longitudinal-profile correlation.",
+        "  - Profile matches must pass correlation, peak-margin, peak-width and search-edge QC;",
+        "    otherwise the method falls back to the initial Q/SPECT-length crop.",
+        "  - Legacy individual and fixed_day0 crops remain explicit comparison options.",
         "  - CT series is selected with priority for ACCT [Transformed Object].",
-        "  - HU to mu_208 uses a simple water-scaled approximation, not scanner-specific bilinear calibration.",
-        f"  - mu_water_208_cm_inv = {MU_WATER_208_CM_INV:.4f}",
+        f"  - CT conversion method = {rows[0].get('conversion_method', 'unknown')}.",
+        "  - The default Catphan T2 curve is provisional until the QC reconstruction matches the patient ACCT protocol.",
         f"  - F_CT clipped to [{CT_FACTOR_CLIP[0]:.1f}, {CT_FACTOR_CLIP[1]:.1f}]",
         f"  - Displayed CTAC uncertainty band = +/- {100.0 * CTAC_RELATIVE_METHOD_UNCERTAINTY:.0f}% method uncertainty.",
         "  - This band is exploratory; it is not a validated propagated uncertainty budget.",
@@ -849,7 +909,8 @@ def write_ct_attenuation_correction_report(
             "  - This is a CT-oracle/reference correction for development, not a validated clinical planar activity.",
             "  - Registration is approximate: the CT attenuation map is resized onto the planar crop.",
             "  - The AP/PA integration axis is assumed from the transformed CT/QSPECT grid orientation.",
-            "  - Q/SPECT is used only as a reference for evaluation, not to fit the correction factor.",
+            "  - Q/SPECT determines crop length and longitudinal matching in profile_qspect mode.",
+            "  - Q/SPECT does not fit the CT attenuation factor; it remains the activity comparison reference.",
             "",
         ]
     )
@@ -897,7 +958,7 @@ def plot_ct_attenuation_correction(
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    plt.show()
+    plt.close(fig)
     return output_path
 
 
@@ -924,7 +985,7 @@ def plot_ct_attenuation_maps(
         ax.axis("off")
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    plt.show()
+    plt.close(fig)
     return output_path
 
 
@@ -960,7 +1021,7 @@ def plot_ct_projection_qc_by_day(
     fig.suptitle(f"{row['qspect_label']} CT projection QC", fontsize=12)
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    plt.show()
+    plt.close(fig)
     return output_path
 
 
@@ -1055,7 +1116,7 @@ def plot_crop_comparison_by_day(
     fig.suptitle(f"{row['qspect_label']} crop correspondence", fontsize=12)
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    plt.show()
+    plt.close(fig)
     return output_path
 
 
@@ -1238,7 +1299,7 @@ def plot_crop_strategy_comparison(
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    plt.show()
+    plt.close(fig)
     return output_path
 
 
@@ -1356,7 +1417,7 @@ def plot_ct_attenuation_activity_crop_comparison(
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
-    plt.show()
+    plt.close(fig)
     return output_path
 
 
@@ -1367,6 +1428,10 @@ def run_ct_attenuation_correction(
     align_pa_to_ap: bool = ALIGN_PA_TO_AP,
 ) -> List[Dict[str, Any]]:
     rows = ct_attenuation_correction_rows(
+        planar_dir, qspect_dir, threshold_fraction,
+        crop_strategy="profile_qspect", align_pa_to_ap=align_pa_to_ap,
+    )
+    individual_rows = ct_attenuation_correction_rows(
         planar_dir, qspect_dir, threshold_fraction,
         crop_strategy="individual", align_pa_to_ap=align_pa_to_ap,
     )
@@ -1382,12 +1447,12 @@ def run_ct_attenuation_correction(
     ct_qc_report_path = write_ct_factor_map_statistics_report(rows)
     crop_report_path = write_crop_alignment_report(rows)
     fixed_crop_report_path = write_crop_alignment_report(fixed_rows, CT_FIXED_CROP_ALIGNMENT_REPORT_PATH)
-    strategy_report_path = write_crop_strategy_comparison_report(rows, fixed_rows)
-    figure_path = plot_ct_attenuation_correction(rows, CT_INDIVIDUAL_CROP_FIGURE_PATH)
-    strategy_figure_path = plot_crop_strategy_comparison(rows, fixed_rows)
+    strategy_report_path = write_crop_strategy_comparison_report(individual_rows, fixed_rows)
+    figure_path = plot_ct_attenuation_correction(rows)
+    strategy_figure_path = plot_crop_strategy_comparison(individual_rows, fixed_rows)
     ctac_planar_fixed_crop_path = plot_ctac_planar_fixed_crop_vs_qspect(fixed_rows)
     ctac_planar_fixed_crop_ratio_path = plot_ctac_planar_fixed_crop_qspect_ratio(fixed_rows)
-    activity_crop_comparison_path = plot_ct_attenuation_activity_crop_comparison(rows, fixed_rows)
+    activity_crop_comparison_path = plot_ct_attenuation_activity_crop_comparison(individual_rows, fixed_rows)
     map_path = plot_ct_attenuation_maps(rows[0])
     ct_qc_paths = plot_all_ct_projection_qc(rows)
     crop_paths = plot_all_crop_comparisons(rows)
@@ -1398,7 +1463,7 @@ def run_ct_attenuation_correction(
     print(f"Saved crop alignment report: {crop_report_path}")
     print(f"Saved fixed Day0 crop alignment report: {fixed_crop_report_path}")
     print(f"Saved crop strategy report: {strategy_report_path}")
-    print(f"Saved individual-crop CT correction figure: {figure_path}")
+    print(f"Saved default profile-matched CT correction figure: {figure_path}")
     print(f"Saved crop strategy figure: {strategy_figure_path}")
     print(f"Saved CTAC Planar fixed-crop figure: {ctac_planar_fixed_crop_path}")
     print(f"Saved CTAC Planar/Q-SPECT ratio figure: {ctac_planar_fixed_crop_ratio_path}")
@@ -1472,7 +1537,7 @@ def plot_attenuation_experiment(result: Dict[str, Any], title: str = "Attenuatio
 
     fig.suptitle(title)
     fig.tight_layout(rect=[0, 0, 1, 0.94])
-    plt.show()
+    plt.close(fig)
 
 
 def print_method_ideas() -> None:

@@ -30,7 +30,9 @@ Then it integrates through the assumed AP/PA CT axis, resizes the resulting
 2D factor map to the planar crop shape, and multiplies the planar crop
 pixel-by-pixel. A parallel exploratory method also converts HU to RayStation
 mass density, assigns a broad material family, and uses that material's
-mass-attenuation coefficient at 208 keV.
+mass-attenuation coefficient at 208 keV. A third method interpolates a direct
+HU-to-mu curve built from Catphan 504 measurements acquired on the T2 CT at
+110 kVp and material coefficients evaluated at 208.4 keV.
 
 Main functions
 --------------
@@ -39,6 +41,8 @@ Main functions
     coefficients in cm^-1.
 - hu_to_mu_208_raystation_materials(...):
     converts HU through RayStation mass density and material-specific mu/rho.
+- catphan_t2_hu_to_mu_2084_cm_inv(...):
+    interpolates the T2 Catphan calibration points directly in HU-to-mu space.
 - ct_attenuation_factor_map(...):
     computes the 2D attenuation factor map F_CT from a CT volume.
 - ct_attenuation_factor_map_raystation_materials(...):
@@ -51,11 +55,13 @@ Main functions
 
 Limitations
 -----------
-Both HU-to-mu conversions remain development methods. The broad HU material
+All HU-to-mu conversions remain development methods. The broad HU material
 classes are not tissue segmentation, and the RayStation density curve must
 match the patient's CT imaging system. The AP/PA integration axis is assumed
 from the transformed CT/QSPECT grid orientation. The map is resized to the
-planar crop; this is not full 2D/3D registration.
+planar crop; this is not full 2D/3D registration. The available T2 Catphan
+curve used a B41s reconstruction kernel and 8 mm slices, whereas the patient
+ACCT uses B08s and 5 mm slices; the Catphan method is therefore provisional.
 """
 
 from typing import Any, Dict, Mapping, Sequence, Tuple
@@ -69,6 +75,10 @@ from plots import view_patient_images
 
 MU_WATER_208_CM_INV = 0.135
 CT_FACTOR_CLIP = (1.0, 20.0)
+# Best local scanner-specific development curve currently available. It remains
+# provisional until Catphan data are acquired with the patient ACCT kernel and
+# slice thickness.
+DEFAULT_CT_CONVERSION_METHOD = "catphan_t2_110kvp"
 
 # Commissioned RayStation HU-to-mass-density control points supplied for this
 # project. Values outside the calibrated HU range are clamped to the endpoint
@@ -80,6 +90,54 @@ RAYSTATION_HU_NODES = np.asarray(
 RAYSTATION_MASS_DENSITY_G_CM3 = np.asarray(
     [0.00121, 0.217, 0.508, 0.967, 0.990, 1.018, 1.061, 1.071, 1.159, 1.575, 3.308],
     dtype=np.float64,
+)
+
+# Direct Catphan 504 calibration for the patient's scanner (HSFA T2).
+# HU values: annual QC report, 2026-04-20, T2 Abdo acquisition, 110 kVp,
+# B41s, 8 mm. The water HU (1.552) is reported in the matching protocol
+# summary. The patient's ACCT is 110 kVp, B08s, 5 mm, so this is an
+# exploratory near-protocol calibration rather than a commissioned curve.
+CATPHAN_T2_110KVP_MATERIAL_NAMES = (
+    "air",
+    "PMP",
+    "LDPE",
+    "polystyrene",
+    "water",
+    "acrylic",
+    "Delrin",
+    "Teflon",
+)
+CATPHAN_T2_110KVP_HU_NODES = np.asarray(
+    [-983.1, -185.9, -95.7, -40.7, 1.552, 119.6, 343.1, 954.7],
+    dtype=np.float64,
+)
+
+# Specific gravities are from the Catphan 504 product guide. Mass attenuation
+# coefficients are total attenuation with coherent scattering at 208.4 keV,
+# in cm^2/g. Public-material values are the direct 0.2084 MeV XCOM rows stored
+# in Data/2026-05_studies/mass_coeff. The proprietary Delrin value comes from
+# the Catphan sensitometry workbook and is interpolated log-log between its
+# 0.200 and 0.210 MeV rows; the local Delrin text file contains only the
+# coherent-scattering component and therefore cannot supply total attenuation.
+CATPHAN_SPECIFIC_GRAVITY_G_CM3 = np.asarray(
+    [0.0013, 0.83, 0.92, 1.03, 1.00, 1.18, 1.42, 2.16],
+    dtype=np.float64,
+)
+CATPHAN_MASS_ATTENUATION_2084_CM2_G = np.asarray(
+    [
+        0.1213,
+        0.1383,
+        0.1383,
+        0.1304,
+        0.1351,
+        0.1310,
+        0.129542416,
+        0.1172,
+    ],
+    dtype=np.float64,
+)
+CATPHAN_T2_110KVP_MU_2084_CM_INV = (
+    CATPHAN_SPECIFIC_GRAVITY_G_CM3 * CATPHAN_MASS_ATTENUATION_2084_CM2_G
 )
 
 # Exploratory HU classes. They identify broad material families, not organs.
@@ -117,6 +175,29 @@ def raystation_hu_to_mass_density_g_cm3(
 
     hu = np.asarray(ct_hu, dtype=np.float64)
     return np.interp(hu, hu_nodes, density_nodes, left=density_nodes[0], right=density_nodes[-1])
+
+
+def catphan_t2_hu_to_mu_2084_cm_inv(
+    ct_hu: np.ndarray,
+    hu_nodes: np.ndarray = CATPHAN_T2_110KVP_HU_NODES,
+    mu_nodes_cm_inv: np.ndarray = CATPHAN_T2_110KVP_MU_2084_CM_INV,
+) -> np.ndarray:
+    """Piecewise-linearly interpolate the provisional T2 Catphan HU-to-mu curve.
+
+    Values outside the measured Catphan range are clamped and reported by the
+    factor-map function rather than extrapolating the terminal segments.
+    """
+    hu_nodes = np.asarray(hu_nodes, dtype=np.float64)
+    mu_nodes = np.asarray(mu_nodes_cm_inv, dtype=np.float64)
+    if hu_nodes.ndim != 1 or mu_nodes.ndim != 1 or hu_nodes.size != mu_nodes.size:
+        raise ValueError("Catphan HU and mu nodes must be one-dimensional arrays of equal length")
+    if hu_nodes.size < 2 or np.any(np.diff(hu_nodes) <= 0.0):
+        raise ValueError("Catphan HU nodes must contain at least two strictly increasing values")
+    if np.any(mu_nodes < 0.0) or not np.all(np.isfinite(mu_nodes)):
+        raise ValueError("Catphan mu nodes must be finite and nonnegative")
+
+    hu = np.asarray(ct_hu, dtype=np.float64)
+    return np.interp(hu, hu_nodes, mu_nodes, left=mu_nodes[0], right=mu_nodes[-1])
 
 
 def classify_material_from_hu(
@@ -301,6 +382,55 @@ def ct_attenuation_factor_map_raystation_materials(
     }
 
 
+def ct_attenuation_factor_map_catphan_t2_110kvp(
+    ct: Dict[str, Any],
+    clip_range: Tuple[float, float] = CT_FACTOR_CLIP,
+) -> Dict[str, Any]:
+    """Compute a CT factor map from the provisional T2 Catphan HU-to-mu curve."""
+    volume_hu = np.asarray(ct["volume"], dtype=np.float64)
+    pixel_spacing = ct.get("pixel_spacing") or []
+    if len(pixel_spacing) < 1:
+        raise ValueError("CT PixelSpacing is required for attenuation-map integration")
+
+    ap_spacing_cm = float(pixel_spacing[0]) / 10.0
+    mu_2084 = catphan_t2_hu_to_mu_2084_cm_inv(volume_hu)
+    mu_integral = np.sum(mu_2084, axis=1) * ap_spacing_cm
+    factor_unclipped = np.exp(0.5 * mu_integral)
+    factor = np.clip(factor_unclipped, clip_range[0], clip_range[1])
+    below_calibration = volume_hu < CATPHAN_T2_110KVP_HU_NODES[0]
+    above_calibration = volume_hu > CATPHAN_T2_110KVP_HU_NODES[-1]
+    outside_calibration = below_calibration | above_calibration
+    return {
+        "factor_map": view_patient_images.orient_qspect_display(factor),
+        "factor_map_unclipped": view_patient_images.orient_qspect_display(factor_unclipped),
+        "mu_integral": view_patient_images.orient_qspect_display(mu_integral),
+        "ap_spacing_cm": ap_spacing_cm,
+        "clip_range": clip_range,
+        "conversion_method": "catphan_t2_110kvp_b41s_hu_to_mu2084",
+        "calibration_material_names": CATPHAN_T2_110KVP_MATERIAL_NAMES,
+        "calibration_hu": CATPHAN_T2_110KVP_HU_NODES.copy(),
+        "calibration_mu_2084_cm_inv": CATPHAN_T2_110KVP_MU_2084_CM_INV.copy(),
+        "outside_calibration_fraction": float(np.mean(outside_calibration)),
+        "below_calibration_fraction": float(np.mean(below_calibration)),
+        "above_calibration_fraction": float(np.mean(above_calibration)),
+        "protocol_limitation": "Catphan T2 110 kVp B41s 8 mm; patient ACCT 110 kVp B08s 5 mm",
+    }
+
+
+def ct_attenuation_factor_map_for_method(
+    ct: Dict[str, Any],
+    conversion_method: str,
+) -> Dict[str, Any]:
+    """Select one registered HU-to-mu conversion by its public method name."""
+    if conversion_method == "water_scaled":
+        return ct_attenuation_factor_map(ct)
+    if conversion_method == "raystation_materials":
+        return ct_attenuation_factor_map_raystation_materials(ct)
+    if conversion_method == "catphan_t2_110kvp":
+        return ct_attenuation_factor_map_catphan_t2_110kvp(ct)
+    raise ValueError(f"Unknown CT conversion method: {conversion_method}")
+
+
 def ct_planar_equivalent_images(ct: Dict[str, Any]) -> Dict[str, np.ndarray]:
     """Return CT views comparable to an AP/PA planar projection for QC."""
     volume_hu = np.asarray(ct["volume"], dtype=np.float64)
@@ -464,7 +594,7 @@ def apply_ct_attenuation_correction_to_crop_simpleitk(
     planar_crop: np.ndarray,
     planar_spacing_yx_mm: Tuple[float, float],
     ct: Dict[str, Any],
-    conversion_method: str = "water_scaled",
+    conversion_method: str = DEFAULT_CT_CONVERSION_METHOD,
     blur_fwhm_mm: float = 0.0,
     output_to_source_offset_xy_mm: Tuple[float, float] = (0.0, 0.0),
 ) -> Dict[str, Any]:
@@ -472,12 +602,7 @@ def apply_ct_attenuation_correction_to_crop_simpleitk(
     planar = np.asarray(planar_crop, dtype=np.float64)
     if planar.ndim != 2:
         raise ValueError("Planar crop must be a 2D image")
-    if conversion_method == "water_scaled":
-        ct_map = ct_attenuation_factor_map(ct)
-    elif conversion_method == "raystation_materials":
-        ct_map = ct_attenuation_factor_map_raystation_materials(ct)
-    else:
-        raise ValueError(f"Unknown CT conversion method: {conversion_method}")
+    ct_map = ct_attenuation_factor_map_for_method(ct, conversion_method)
 
     pixel_spacing = ct.get("pixel_spacing") or []
     slice_spacing_mm = ct.get("slice_spacing") or ct.get("slice_thickness")
@@ -515,15 +640,10 @@ def apply_ct_attenuation_correction_to_crop_simpleitk(
 def apply_ct_attenuation_correction_to_crop(
     planar_crop: np.ndarray,
     ct: Dict[str, Any],
-    conversion_method: str = "water_scaled",
+    conversion_method: str = DEFAULT_CT_CONVERSION_METHOD,
 ) -> Dict[str, Any]:
     """Apply the CT attenuation-factor map to one already-cropped planar image."""
-    if conversion_method == "water_scaled":
-        ct_map = ct_attenuation_factor_map(ct)
-    elif conversion_method == "raystation_materials":
-        ct_map = ct_attenuation_factor_map_raystation_materials(ct)
-    else:
-        raise ValueError(f"Unknown CT conversion method: {conversion_method}")
+    ct_map = ct_attenuation_factor_map_for_method(ct, conversion_method)
     factor_resized = resize_map_to_image(ct_map["factor_map"], planar_crop.shape)
     corrected_crop = np.asarray(planar_crop, dtype=np.float64) * factor_resized
     before_counts = float(np.sum(planar_crop))

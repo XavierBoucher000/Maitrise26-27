@@ -29,6 +29,7 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter, gaussian_filter1d
 
 import attenuation_correction as ac
+import ct_attenuation_correction as ctac
 import planar_processing
 import qspect_processing
 
@@ -250,7 +251,7 @@ def registered_day0_rows(
     scans: List[Dict[str, Any]],
     qspect_series: List[Dict[str, Any]],
     qspect_dir: Path,
-    conversion_method: str = "water_scaled",
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> List[Dict[str, Any]]:
     """Apply the new Day-0 crop plus planar-only longitudinal registration."""
     if not fixed_rows or not scans or not qspect_series:
@@ -303,7 +304,7 @@ def silhouette_day0_rows(
     scans: List[Dict[str, Any]],
     qspect_series: List[Dict[str, Any]],
     qspect_dir: Path,
-    conversion_method: str = "water_scaled",
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> List[Dict[str, Any]]:
     """Preserve the Day-0 height and move it only with a valid body silhouette."""
     if not fixed_rows or not scans or not qspect_series:
@@ -363,7 +364,7 @@ def silhouette_day0_rows(
 
 
 def compare_crop_methods(
-    conversion_method: str = "water_scaled",
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Calculate variable, fixed-J0 and registered-J0 crop strategies."""
     planar_dir = planar_processing.default_planar_study_dir()
@@ -422,7 +423,7 @@ def compact_crop_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def calculate_comparison_outputs(
-    conversion_method: str = "water_scaled",
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Calculate and compact each method sequentially to limit peak memory."""
     planar_dir = planar_processing.default_planar_study_dir()

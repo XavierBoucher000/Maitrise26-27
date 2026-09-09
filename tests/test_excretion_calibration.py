@@ -21,7 +21,7 @@ def test_day1_calibration_matches_excretion_reference_exactly():
     )
     row = result["rows"][result["calibration_index"]]
 
-    assert result["calibration_factor"] == pytest.approx(0.88056, abs=1e-5)
+    assert result["calibration_factor"] == pytest.approx(0.85578, abs=1e-5)
     assert row["new_urine_calibrated_planar_mbq"] == pytest.approx(
         row["excretion_reference_at_planar_time_mbq"]
     )

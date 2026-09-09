@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import attenuation_correction
+import ct_attenuation_correction as ctac
 import planar_processing
 
 
@@ -26,7 +27,7 @@ def collect_fixed_crop_excluded_counts() -> List[Dict[str, Any]]:
     """Run the existing fixed-Day0 pipeline and return its crop diagnostics."""
     return attenuation_correction.ct_attenuation_correction_rows(
         crop_strategy="fixed_day0",
-        conversion_method="water_scaled",
+        conversion_method=ctac.DEFAULT_CT_CONVERSION_METHOD,
         align_pa_to_ap=ALIGN_PA_TO_AP,
     )
 

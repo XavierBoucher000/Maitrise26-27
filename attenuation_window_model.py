@@ -428,6 +428,7 @@ def build_ct_reference_rows(
     scans: Sequence[Dict[str, Any]],
     ct_root: Path,
     crop_bounds: Tuple[int, int] = (141, 609),
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> List[Dict[str, Any]]:
     """Build raw-ACCT reference rows without loading Q/SPECT data."""
     crop_top, crop_bottom = (int(crop_bounds[0]), int(crop_bounds[1]))
@@ -449,7 +450,7 @@ def build_ct_reference_rows(
         )
         planar_crop = full_planar[crop_top:crop_bottom, :]
         ct = load_ct_for_planar_scan(ct_root, scan)
-        ct_map = ctac.ct_attenuation_factor_map(ct)
+        ct_map = ctac.ct_attenuation_factor_map_for_method(ct, conversion_method)
         mu_integral_resized = ctac.resize_map_to_image(
             ct_map["mu_integral"],
             planar_crop.shape,
@@ -509,6 +510,10 @@ def build_ct_reference_rows(
                 "local_dwell_time_s": float(timing.local_dwell_time_s),
                 "ct_series_description": str(ct["series_description"]),
                 "ct_shape": tuple(ct["shape"]),
+                "ct_conversion_method": conversion_method,
+                "ct_conversion_protocol_limitation": ct_map.get(
+                    "protocol_limitation"
+                ),
             }
         )
     return rows
@@ -562,10 +567,16 @@ def build_dataset(
     minimum_valid_fraction: float = 0.25,
     crop_bounds: Tuple[int, int] = (141, 609),
     include_qspect_reference: bool = False,
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> Dict[str, Any]:
     """Load planar/CT acquisitions and create a patch-level dataset."""
     scans = ac.sorted_planar_scans(planar_dir)
-    ct_rows = build_ct_reference_rows(scans, ct_root, crop_bounds=crop_bounds)
+    ct_rows = build_ct_reference_rows(
+        scans,
+        ct_root,
+        crop_bounds=crop_bounds,
+        conversion_method=conversion_method,
+    )
     if include_qspect_reference:
         attach_optional_qspect_reference(ct_rows, ct_root)
     count = min(len(scans), len(ct_rows))
@@ -1100,7 +1111,8 @@ def write_report(
             "  - Patch targets and support are count-weighted, so biodistribution and noise affect sampling.",
             "  - The relative-photopeak feature can encode biodistribution; compare its reported ablation.",
             "  - CT-to-planar mapping is approximate resizing, not DICOM registration.",
-            "  - HU-to-mu conversion is a water-scaled approximation, not a calibrated bilinear map.",
+            f"  - CT target conversion = {dataset['ct_rows'][0]['ct_conversion_method']}.",
+            "  - The default Catphan T2 curve is provisional until the QC reconstruction matches the patient ACCT protocol.",
             "  - AP/PA orientation and registration still require geometry-aware verification.",
             "  - Optional Q/SPECT output is descriptive only and never a regression target.",
             "  - Generalization requires phantoms and additional patients.",
@@ -1271,6 +1283,7 @@ def run_model(
     alpha: float = 10.0,
     crop_bounds: Tuple[int, int] = (141, 609),
     include_qspect_reference: bool = False,
+    conversion_method: str = ctac.DEFAULT_CT_CONVERSION_METHOD,
 ) -> Dict[str, Any]:
     dataset = build_dataset(
         planar_dir=(planar_dir or planar_processing.default_planar_study_dir()),
@@ -1280,6 +1293,7 @@ def run_model(
         minimum_valid_fraction=minimum_valid_fraction,
         crop_bounds=crop_bounds,
         include_qspect_reference=include_qspect_reference,
+        conversion_method=conversion_method,
     )
     validation = leave_one_day_out(dataset, alpha=alpha)
     proxy_only_dataset = {
@@ -1331,6 +1345,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--planar-dir", type=Path)
     parser.add_argument("--ct-root", type=Path)
     parser.add_argument(
+        "--ct-conversion-method",
+        choices=("water_scaled", "raystation_materials", "catphan_t2_110kvp"),
+        default=ctac.DEFAULT_CT_CONVERSION_METHOD,
+    )
+    parser.add_argument(
         "--include-qspect-reference",
         action="store_true",
         help="Add Q/SPECT to the final plot/report only; never use it for fitting.",
@@ -1349,4 +1368,5 @@ if __name__ == "__main__":
         alpha=arguments.alpha,
         crop_bounds=(arguments.crop_top, arguments.crop_bottom),
         include_qspect_reference=arguments.include_qspect_reference,
+        conversion_method=arguments.ct_conversion_method,
     )

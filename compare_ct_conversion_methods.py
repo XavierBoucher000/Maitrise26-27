@@ -1,8 +1,10 @@
-"""Compare the original and RayStation/material CT-to-mu conversions.
+"""Compare three development CT HU-to-mu conversions.
 
 Outputs are written to ``fig/HU_conversion_comparison``. The activity
 comparison deliberately reuses a fixed Day-0 planar crop for every time point,
-so the CT conversion is the only changed correction setting.
+so the CT conversion is the only changed correction setting. The direct T2
+Catphan curve is provisional because its QC reconstruction (B41s, 8 mm) does
+not exactly match the patient ACCT reconstruction (B08s, 5 mm).
 """
 
 from pathlib import Path
@@ -22,6 +24,8 @@ RAYSTATION_SINGLE_CURVE_FIGURE = (
     OUTPUT_DIR / "raystation_hu_to_mass_density_single_curve.png"
 )
 PROJECT_CALIBRATION_FIGURE = OUTPUT_DIR / "hu_to_mass_density_calibration_used.png"
+CATPHAN_CALIBRATION_FIGURE = OUTPUT_DIR / "catphan_t2_110kvp_hu_to_mu2084.png"
+CATPHAN_VALUES_FILE = OUTPUT_DIR / "catphan_t2_110kvp_hu_to_mu2084_values.csv"
 ACTIVITY_FIGURE = OUTPUT_DIR / "ctac_fixed_crop_conversion_comparison.png"
 TEMPORAL_DIFFERENCE_FIGURE = OUTPUT_DIR / "ctac_conversion_difference_over_time.png"
 VALUES_FILE = OUTPUT_DIR / "ctac_conversion_comparison_values.csv"
@@ -175,19 +179,136 @@ def plot_project_hu_to_density_calibration(
     return output_path
 
 
+def plot_catphan_t2_hu_to_mu_calibration(
+    output_path: Path = CATPHAN_CALIBRATION_FIGURE,
+) -> Path:
+    """Plot the provisional direct T2 Catphan HU-to-mu208.4 calibration."""
+    hu_nodes = np.asarray(ctac.CATPHAN_T2_110KVP_HU_NODES, dtype=float)
+    mu_nodes = np.asarray(ctac.CATPHAN_T2_110KVP_MU_2084_CM_INV, dtype=float)
+    hu_curve = np.linspace(hu_nodes[0], hu_nodes[-1], 3000)
+    mu_curve = ctac.catphan_t2_hu_to_mu_2084_cm_inv(hu_curve)
+
+    fig, ax = plt.subplots(figsize=(9.2, 5.8), facecolor="white")
+    ax.plot(
+        hu_curve,
+        mu_curve,
+        color="#1f77b4",
+        linewidth=2.4,
+        label="Interpolation linéaire par segments",
+        zorder=2,
+    )
+    ax.scatter(
+        hu_nodes,
+        mu_nodes,
+        color="#d62728",
+        edgecolor="white",
+        linewidth=0.7,
+        s=60,
+        label="Points Catphan T2 à 110 kVp",
+        zorder=3,
+    )
+    annotation_offsets = {
+        "air": (5, 7),
+        "PMP": (5, 7),
+        "LDPE": (5, 8),
+        "polystyrene": (-10, 18),
+        "water": (12, -20),
+        "acrylic": (5, 8),
+        "Delrin": (5, 8),
+        "Teflon": (5, 8),
+    }
+    for material, hu_value, mu_value in zip(
+        ctac.CATPHAN_T2_110KVP_MATERIAL_NAMES, hu_nodes, mu_nodes
+    ):
+        ax.annotate(
+            material,
+            (hu_value, mu_value),
+            xytext=annotation_offsets[material],
+            textcoords="offset points",
+            ha="right" if material == "polystyrene" else "left",
+            fontsize=8,
+            color="#444444",
+        )
+    ax.set_title("Courbe provisoire T2 : HU vers μ à 208,4 keV")
+    ax.set_xlabel("Unité Hounsfield (HU)")
+    ax.set_ylabel(r"Coefficient linéaire μ$_{208,4}$ (cm$^{-1}$)")
+    ax.set_xlim(hu_nodes[0] - 70.0, hu_nodes[-1] + 70.0)
+    ax.set_ylim(0.0, float(mu_nodes.max()) * 1.13)
+    ax.grid(True, linestyle="--", alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(frameon=False, loc="upper left")
+    ax.text(
+        0.98,
+        0.05,
+        "HU mesurés : T2, 110 kVp, B41s, 8 mm\n"
+        "Patient : T2, 110 kVp, B08s, 5 mm — méthode exploratoire",
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=8.5,
+        color="#555555",
+    )
+    _save_png_svg(fig, output_path)
+    return output_path
+
+
+def write_catphan_calibration_values(
+    output_path: Path = CATPHAN_VALUES_FILE,
+) -> Path:
+    """Export every direct Catphan calibration node and its units."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as stream:
+        stream.write(
+            "material,hu_t2_110kvp_b41s_8mm,density_g_cm3,"
+            "mass_attenuation_2084_cm2_g,linear_attenuation_2084_cm_inv\n"
+        )
+        for material, hu, density, mu_over_rho, mu in zip(
+            ctac.CATPHAN_T2_110KVP_MATERIAL_NAMES,
+            ctac.CATPHAN_T2_110KVP_HU_NODES,
+            ctac.CATPHAN_SPECIFIC_GRAVITY_G_CM3,
+            ctac.CATPHAN_MASS_ATTENUATION_2084_CM2_G,
+            ctac.CATPHAN_T2_110KVP_MU_2084_CM_INV,
+        ):
+            stream.write(
+                f"{material},{hu:.8g},{density:.8g},{mu_over_rho:.9g},{mu:.9g}\n"
+            )
+    return output_path
+
+
 def _paired_arrays(
-    old_rows: List[Dict[str, Any]], new_rows: List[Dict[str, Any]]
+    old_rows: List[Dict[str, Any]],
+    new_rows: List[Dict[str, Any]],
+    catphan_rows: List[Dict[str, Any]],
 ) -> Dict[str, np.ndarray]:
-    if len(old_rows) != len(new_rows):
-        raise ValueError("The two CT conversion methods returned different numbers of acquisitions")
+    if len({len(old_rows), len(new_rows), len(catphan_rows)}) != 1:
+        raise ValueError("The CT conversion methods returned different numbers of acquisitions")
     return {
         "days": np.asarray([row["day_offset"] for row in old_rows], dtype=float),
         "qspect": np.asarray([row["qspect_activity_mbq"] for row in old_rows], dtype=float),
         "planar": np.asarray([row["planar_crop_local_activity_mbq"] for row in old_rows], dtype=float),
         "old_ctac": np.asarray([row["ctac_local_activity_mbq"] for row in old_rows], dtype=float),
         "new_ctac": np.asarray([row["ctac_local_activity_mbq"] for row in new_rows], dtype=float),
+        "catphan_ctac": np.asarray(
+            [row["ctac_local_activity_mbq"] for row in catphan_rows], dtype=float
+        ),
         "old_factor": np.asarray([row["effective_ct_factor"] for row in old_rows], dtype=float),
         "new_factor": np.asarray([row["effective_ct_factor"] for row in new_rows], dtype=float),
+        "catphan_factor": np.asarray(
+            [row["effective_ct_factor"] for row in catphan_rows], dtype=float
+        ),
+        "catphan_outside_fraction": np.asarray(
+            [row["ct_conversion_outside_calibration_fraction"] for row in catphan_rows],
+            dtype=float,
+        ),
+        "catphan_below_fraction": np.asarray(
+            [row["ct_conversion_below_calibration_fraction"] for row in catphan_rows],
+            dtype=float,
+        ),
+        "catphan_above_fraction": np.asarray(
+            [row["ct_conversion_above_calibration_fraction"] for row in catphan_rows],
+            dtype=float,
+        ),
     }
 
 
@@ -204,6 +325,10 @@ def plot_fixed_crop_activity_comparison(
     ax.plot(
         values["days"], values["new_ctac"], "s-", linewidth=2,
         label="CTAC — densité RayStation + matériaux",
+    )
+    ax.plot(
+        values["days"], values["catphan_ctac"], "D-", linewidth=2,
+        label="CTAC — courbe Catphan T2 (provisoire)",
     )
     ax.set_title("CTAC planaire — crop fixe Day 0")
     ax.set_xlabel("Temps après la première acquisition (jours)")
@@ -222,6 +347,7 @@ def plot_temporal_conversion_difference(
     """Compare each fixed-crop CTAC estimate with Q/SPECT over time."""
     old_over_qspect = values["old_ctac"] / values["qspect"]
     new_over_qspect = values["new_ctac"] / values["qspect"]
+    catphan_over_qspect = values["catphan_ctac"] / values["qspect"]
 
     fig, ax = plt.subplots(figsize=(8.2, 5.2), facecolor="white")
     ax.axhline(1.0, color="black", linewidth=1.4, linestyle="--", label="Accord avec Q/SPECT")
@@ -232,6 +358,10 @@ def plot_temporal_conversion_difference(
     ax.plot(
         values["days"], new_over_qspect, "s-", color="tab:green", linewidth=2,
         label="RayStation + matériaux / Q/SPECT",
+    )
+    ax.plot(
+        values["days"], catphan_over_qspect, "D-", color="tab:blue", linewidth=2,
+        label="Catphan T2 / Q/SPECT (provisoire)",
     )
     ax.set_title("Ratio CTAC planaire / Q/SPECT — crop fixe Day 0")
     ax.set_xlabel("Temps après la première acquisition (jours)")
@@ -250,10 +380,16 @@ def write_values(values: Dict[str, np.ndarray], output_path: Path = VALUES_FILE)
         [
             values["days"], values["planar"], values["qspect"],
             values["old_ctac"], values["new_ctac"],
-            values["old_factor"], values["new_factor"],
+            values["catphan_ctac"],
+            values["old_factor"], values["new_factor"], values["catphan_factor"],
             values["old_ctac"] / values["qspect"],
             values["new_ctac"] / values["qspect"],
+            values["catphan_ctac"] / values["qspect"],
             100.0 * (values["new_ctac"] - values["old_ctac"]) / values["old_ctac"],
+            100.0 * (values["catphan_ctac"] - values["old_ctac"]) / values["old_ctac"],
+            values["catphan_outside_fraction"],
+            values["catphan_below_fraction"],
+            values["catphan_above_fraction"],
         ]
     )
     np.savetxt(
@@ -262,8 +398,12 @@ def write_values(values: Dict[str, np.ndarray], output_path: Path = VALUES_FILE)
         delimiter=",",
         header=(
             "day,planar_fixed_crop_mbq,qspect_mbq,ctac_old_mbq,ctac_raystation_materials_mbq,"
-            "effective_factor_old,effective_factor_raystation_materials,"
-            "ctac_old_over_qspect,ctac_raystation_materials_over_qspect,new_minus_old_percent"
+            "ctac_catphan_t2_mbq,effective_factor_old,effective_factor_raystation_materials,"
+            "effective_factor_catphan_t2,ctac_old_over_qspect,"
+            "ctac_raystation_materials_over_qspect,ctac_catphan_t2_over_qspect,"
+            "raystation_minus_old_percent,catphan_minus_old_percent,"
+            "catphan_voxels_outside_calibration_fraction,"
+            "catphan_voxels_below_air_hu_fraction,catphan_voxels_above_teflon_hu_fraction"
         ),
         comments="",
         fmt="%.8g",
@@ -276,6 +416,8 @@ def run_comparison() -> Dict[str, Any]:
     calibration_path = plot_hu_to_density_calibration()
     raystation_single_curve_path = plot_raystation_hu_to_density_single_curve()
     project_calibration_path = plot_project_hu_to_density_calibration()
+    catphan_calibration_path = plot_catphan_t2_hu_to_mu_calibration()
+    catphan_values_path = write_catphan_calibration_values()
     old_rows = attenuation_correction.ct_attenuation_correction_rows(
         crop_strategy="fixed_day0", conversion_method="water_scaled",
         align_pa_to_ap=ALIGN_PA_TO_AP,
@@ -284,7 +426,11 @@ def run_comparison() -> Dict[str, Any]:
         crop_strategy="fixed_day0", conversion_method="raystation_materials",
         align_pa_to_ap=ALIGN_PA_TO_AP,
     )
-    values = _paired_arrays(old_rows, new_rows)
+    catphan_rows = attenuation_correction.ct_attenuation_correction_rows(
+        crop_strategy="fixed_day0", conversion_method="catphan_t2_110kvp",
+        align_pa_to_ap=ALIGN_PA_TO_AP,
+    )
+    values = _paired_arrays(old_rows, new_rows, catphan_rows)
     activity_path = plot_fixed_crop_activity_comparison(values)
     difference_path = plot_temporal_conversion_difference(values)
     values_path = write_values(values)
@@ -292,16 +438,21 @@ def run_comparison() -> Dict[str, Any]:
     print(f"Saved HU-density calibration: {calibration_path}")
     print(f"Saved single-curve RayStation calibration: {raystation_single_curve_path}")
     print(f"Saved project HU-density calibration: {project_calibration_path}")
+    print(f"Saved provisional Catphan HU-mu calibration: {catphan_calibration_path}")
+    print(f"Saved provisional Catphan calibration values: {catphan_values_path}")
     print(f"Saved fixed-crop CTAC comparison: {activity_path}")
     print(f"Saved CTAC/Q-SPECT ratios over time: {difference_path}")
     print(f"Saved numerical values: {values_path}")
     return {
         "old_rows": old_rows,
         "new_rows": new_rows,
+        "catphan_rows": catphan_rows,
         "values": values,
         "calibration_path": calibration_path,
         "raystation_single_curve_path": raystation_single_curve_path,
         "project_calibration_path": project_calibration_path,
+        "catphan_calibration_path": catphan_calibration_path,
+        "catphan_values_path": catphan_values_path,
         "activity_path": activity_path,
         "difference_path": difference_path,
         "values_path": values_path,

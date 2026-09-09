@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import attenuation_correction
+import ct_attenuation_correction as ctac
 
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "test"
@@ -17,7 +18,7 @@ VALUES_PATH = OUTPUT_DIR / "ctac_ap_pa_alignment_option_values.csv"
 def fixed_crop_rows(align_pa_to_ap: bool) -> List[Dict[str, Any]]:
     return attenuation_correction.ct_attenuation_correction_rows(
         crop_strategy="fixed_day0",
-        conversion_method="water_scaled",
+        conversion_method=ctac.DEFAULT_CT_CONVERSION_METHOD,
         align_pa_to_ap=align_pa_to_ap,
     )
 

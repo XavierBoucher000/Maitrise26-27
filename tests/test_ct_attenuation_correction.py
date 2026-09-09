@@ -1,3 +1,5 @@
+import inspect
+
 import numpy as np
 import pytest
 
@@ -8,6 +10,31 @@ import compare_crop_methods
 import crop_excluded_counts_test
 
 
+def test_catphan_t2_is_the_shared_default_ct_conversion():
+    expected = "catphan_t2_110kvp"
+    assert ctac.DEFAULT_CT_CONVERSION_METHOD == expected
+    for function in (
+        ctac.apply_ct_attenuation_correction_to_crop,
+        ctac.apply_ct_attenuation_correction_to_crop_simpleitk,
+        attenuation_correction.ct_attenuation_correct_scan,
+        attenuation_correction.ct_attenuation_correction_rows,
+        compare_crop_methods.compare_crop_methods,
+    ):
+        assert (
+            inspect.signature(function).parameters["conversion_method"].default
+            == expected
+        )
+
+
+def test_profile_qspect_is_the_default_ctac_crop_strategy():
+    assert (
+        inspect.signature(attenuation_correction.ct_attenuation_correction_rows)
+        .parameters["crop_strategy"]
+        .default
+        == "profile_qspect"
+    )
+
+
 def test_raystation_density_matches_nodes_and_clamps_outside_range():
     result = ctac.raystation_hu_to_mass_density_g_cm3(
         np.array([-2000.0, *ctac.RAYSTATION_HU_NODES, 5000.0])
@@ -16,6 +43,21 @@ def test_raystation_density_matches_nodes_and_clamps_outside_range():
     assert result[0] == pytest.approx(ctac.RAYSTATION_MASS_DENSITY_G_CM3[0])
     assert result[-1] == pytest.approx(ctac.RAYSTATION_MASS_DENSITY_G_CM3[-1])
     np.testing.assert_allclose(result[1:-1], ctac.RAYSTATION_MASS_DENSITY_G_CM3)
+
+
+def test_catphan_t2_hu_to_mu_matches_nodes_and_clamps_outside_range():
+    result = ctac.catphan_t2_hu_to_mu_2084_cm_inv(
+        np.array([-2000.0, *ctac.CATPHAN_T2_110KVP_HU_NODES, 5000.0])
+    )
+
+    assert result[0] == pytest.approx(ctac.CATPHAN_T2_110KVP_MU_2084_CM_INV[0])
+    assert result[-1] == pytest.approx(ctac.CATPHAN_T2_110KVP_MU_2084_CM_INV[-1])
+    np.testing.assert_allclose(result[1:-1], ctac.CATPHAN_T2_110KVP_MU_2084_CM_INV)
+    np.testing.assert_allclose(
+        ctac.CATPHAN_T2_110KVP_MU_2084_CM_INV,
+        ctac.CATPHAN_SPECIFIC_GRAVITY_G_CM3
+        * ctac.CATPHAN_MASS_ATTENUATION_2084_CM2_G,
+    )
 
 
 def test_material_classification_uses_configurable_hu_ranges():
@@ -62,17 +104,32 @@ def test_new_factor_map_has_expected_shape_and_integral():
     np.testing.assert_allclose(result["factor_map"], np.exp(0.5 * 3.0 * expected_mu))
 
 
-def test_apply_crop_can_select_either_conversion_method():
+def test_catphan_factor_map_reports_low_and_high_clamping_separately():
+    volume = np.array([[[-1024.0, 0.0, 1200.0]]], dtype=float)
+    ct = {"volume": volume, "pixel_spacing": [10.0, 10.0]}
+    result = ctac.ct_attenuation_factor_map_catphan_t2_110kvp(ct)
+
+    assert result["outside_calibration_fraction"] == pytest.approx(2.0 / 3.0)
+    assert result["below_calibration_fraction"] == pytest.approx(1.0 / 3.0)
+    assert result["above_calibration_fraction"] == pytest.approx(1.0 / 3.0)
+
+
+def test_apply_crop_can_select_each_registered_conversion_method():
     crop = np.ones((2, 4), dtype=float)
     ct = {"volume": np.zeros((2, 3, 4)), "pixel_spacing": [10.0, 10.0]}
 
     old = ctac.apply_ct_attenuation_correction_to_crop(crop, ct, "water_scaled")
     new = ctac.apply_ct_attenuation_correction_to_crop(crop, ct, "raystation_materials")
+    catphan = ctac.apply_ct_attenuation_correction_to_crop(
+        crop, ct, "catphan_t2_110kvp"
+    )
 
     assert old["conversion_method"] == "water_scaled"
     assert new["conversion_method"] == "raystation_materials"
+    assert catphan["conversion_method"] == "catphan_t2_110kvp"
     assert old["ct_factor_stats"]["mean"] > 1.0
     assert new["ct_factor_stats"]["mean"] > 1.0
+    assert catphan["ct_factor_stats"]["mean"] > 1.0
 
 
 def test_simpleitk_resampling_preserves_identical_physical_grid():
