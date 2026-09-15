@@ -11,6 +11,7 @@ from scipy.optimize import curve_fit, nnls
 import planar_processing
 import qspect_processing
 import dicom_loader
+import figure_layout
 
 
 COMPARISON_MODE = "time_normalized"
@@ -21,8 +22,8 @@ AUTO_CLOSE_FIGURES = True
 AUTO_CLOSE_DELAY_SECONDS = 0.1
 SAVE_FIT_FIGURE = True
 RUN_PATIENT_4V6_FIGURE = False
-FIG_ROOT = Path(__file__).resolve().parent / "fig"
-RETENTION_FIG_DIR = FIG_ROOT / "retention"
+FIG_ROOT = figure_layout.FIG_ROOT
+RETENTION_FIG_DIR = figure_layout.patient_cycle_dir(__file__)
 FIT_FIGURE_PATH = RETENTION_FIG_DIR / "planar_qspect_retention_fits.png"
 ACTIVITY_FIT_FIGURE_PATH = RETENTION_FIG_DIR / "planar_qspect_activity_fits.png"
 SELECTED_BI_FIT_FIGURE_PATH = RETENTION_FIG_DIR / "planar_qspect_activity_fits_selected_bi_only.png"

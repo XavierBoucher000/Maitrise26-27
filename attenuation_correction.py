@@ -26,13 +26,14 @@ import numpy as np
 import correction_3DEW as c3
 import ct_attenuation_correction as ctac
 import dicom_loader
+import figure_layout
 import planar_qspect_crop
 import planar_processing
 import qspect_processing
 from plots import view_patient_images
 
 
-FIG_ROOT = Path(__file__).resolve().parent / "fig"
+FIG_ROOT = figure_layout.patient_cycle_dir(__file__)
 ATTENUATION_MODEL_DIR = FIG_ROOT / "attenuation_model"
 ATTENUATION_MODEL_REPORT_PATH = ATTENUATION_MODEL_DIR / "one_patient_katt_leave_one_out.txt"
 ATTENUATION_MODEL_FIGURE_PATH = ATTENUATION_MODEL_DIR / "one_patient_katt_leave_one_out.png"
@@ -42,15 +43,13 @@ CT_CORRECTION_FIGURE_PATH = CT_CORRECTION_DIR / "ct_attenuation_correction_activ
 CT_INDIVIDUAL_CROP_FIGURE_PATH = CT_CORRECTION_DIR / "ct_attenuation_correction_activity_individual_crop.png"
 CT_CORRECTION_MAP_FIGURE_PATH = CT_CORRECTION_DIR / "ct_attenuation_maps_day0.png"
 CT_CROP_BY_DAY_DIR = CT_CORRECTION_DIR / "crops_by_day"
-CT_FIXED_CROP_BY_DAY_DIR = CT_CORRECTION_DIR / "crops_by_day_fixed_day0"
 CT_PROJECTION_QC_DIR = CT_CORRECTION_DIR / "ct_projection_qc"
 CT_PROJECTION_QC_REPORT_PATH = CT_PROJECTION_QC_DIR / "ct_factor_map_statistics.txt"
 CT_CROP_ALIGNMENT_REPORT_PATH = CT_CROP_BY_DAY_DIR / "crop_alignment_metrics.txt"
-CT_FIXED_CROP_ALIGNMENT_REPORT_PATH = CT_FIXED_CROP_BY_DAY_DIR / "crop_alignment_metrics.txt"
 CT_CROP_STRATEGY_REPORT_PATH = CT_CORRECTION_DIR / "ct_crop_strategy_comparison.txt"
 CT_CROP_STRATEGY_FIGURE_PATH = CT_CORRECTION_DIR / "ct_crop_strategy_comparison.png"
-CTAC_PLANAR_FIXED_CROP_FIGURE_PATH = CT_CORRECTION_DIR / "ctac_planar_fixed_crop_vs_qspect.png"
-CTAC_PLANAR_FIXED_CROP_RATIO_FIGURE_PATH = CT_CORRECTION_DIR / "ctac_planar_fixed_crop_qspect_ratio.png"
+CTAC_PLANAR_PROFILE_FIGURE_PATH = CT_CORRECTION_DIR / "ctac_planar_profile_vs_qspect.png"
+CTAC_PLANAR_PROFILE_RATIO_FIGURE_PATH = CT_CORRECTION_DIR / "ctac_planar_profile_qspect_ratio.png"
 CT_ACTIVITY_CROP_COMPARISON_FIGURE_PATH = CT_CORRECTION_DIR / "ct_attenuation_correction_activity_crop_comparison.png"
 MU_WATER_208_CM_INV = ctac.MU_WATER_208_CM_INV
 CT_FACTOR_CLIP = ctac.CT_FACTOR_CLIP
@@ -547,8 +546,19 @@ def run_one_patient_katt_baseline(
 
 
 def sorted_planar_scans(study_dir: Path) -> List[Dict[str, Any]]:
-    patient_scans = dicom_loader.load_patient_scans(study_dir)
-    scans = [scan for scan in patient_scans["scans"] if scan["images"]]
+    # A cycle export may contain CT, TOMO, Q/SPECT and processing objects.  The
+    # quantitative planar pipeline must use only the primary WB RAPIDE series,
+    # not the EPP-Alpha display copy.
+    patient_scans = dicom_loader.load_patient_scans(
+        study_dir, scan_name_filter="WB.RAPIDE"
+    )
+    scans = [
+        scan
+        for scan in patient_scans["scans"]
+        if scan["images"]
+        and str(scan["images"][0].get("series_description", "")).strip().upper()
+        == "WB RAPIDE"
+    ]
     scans.sort(key=lambda scan: (dicom_loader.scan_datetime(scan) is None, dicom_loader.scan_datetime(scan), scan["scan_name"]))
     return scans
 
@@ -1289,56 +1299,52 @@ def plot_crop_strategy_comparison(
     return output_path
 
 
-def plot_ctac_planar_fixed_crop_vs_qspect(
-    fixed_rows: List[Dict[str, Any]],
-    output_path: Path = CTAC_PLANAR_FIXED_CROP_FIGURE_PATH,
+def plot_ctac_planar_profile_vs_qspect(
+    profile_rows: List[Dict[str, Any]],
+    output_path: Path = CTAC_PLANAR_PROFILE_FIGURE_PATH,
 ) -> Path:
-    """Plot Q/SPECT and CTAC Planar using only the fixed Day0 crop."""
+    """Plot Q/SPECT and the default profile-cropped CTAC planar activity."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    days = np.asarray([row["day_offset"] for row in fixed_rows], dtype=np.float64)
-    qspect = np.asarray([row["qspect_activity_mbq"] for row in fixed_rows], dtype=np.float64)
-    fixed_ctac = np.asarray([row["ctac_local_activity_mbq"] for row in fixed_rows], dtype=np.float64)
+    days = np.asarray([row["day_offset"] for row in profile_rows], dtype=np.float64)
+    qspect = np.asarray([row["qspect_activity_mbq"] for row in profile_rows], dtype=np.float64)
+    profile_ctac = np.asarray(
+        [row["ctac_local_activity_mbq"] for row in profile_rows], dtype=np.float64
+    )
 
     fig, ax = plt.subplots(figsize=(7.5, 5.0), facecolor="white")
     ax.plot(
-        days,
-        qspect,
-        marker="^",
-        linewidth=2,
-        color="tab:blue",
-        label="Q/SPECT",
+        days, qspect, marker="^", linewidth=2, color="tab:blue", label="Q/SPECT"
     )
     ax.plot(
         days,
-        fixed_ctac,
+        profile_ctac,
         marker="o",
         linewidth=2,
         color="tab:green",
-        label="CTAC Planar",
+        label="Planaire CTAC — crop par profil",
     )
-    ax.set_title("CTAC Planar")
+    ax.set_title("Activité planaire CTAC par profil versus Q/SPECT")
     ax.set_xlabel("Temps après la première acquisition (jours)")
     ax.set_ylabel("Activité estimée (MBq)")
     ax.grid(True, linestyle="--", alpha=0.3)
     ax.legend(frameon=False)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return output_path
 
 
-def plot_ctac_planar_fixed_crop_qspect_ratio(
-    fixed_rows: List[Dict[str, Any]],
-    output_path: Path = CTAC_PLANAR_FIXED_CROP_RATIO_FIGURE_PATH,
+def plot_ctac_planar_profile_qspect_ratio(
+    profile_rows: List[Dict[str, Any]],
+    output_path: Path = CTAC_PLANAR_PROFILE_RATIO_FIGURE_PATH,
 ) -> Path:
-    """Plot the fixed-Day0-crop CTAC Planar activity divided by Q/SPECT."""
+    """Plot default profile-cropped CTAC planar activity divided by Q/SPECT."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    days = np.asarray([row["day_offset"] for row in fixed_rows], dtype=np.float64)
+    days = np.asarray([row["day_offset"] for row in profile_rows], dtype=np.float64)
     ratio = np.asarray(
-        [row["ctac_local_activity_mbq"] / row["qspect_activity_mbq"] for row in fixed_rows],
+        [row["ctac_local_activity_mbq"] / row["qspect_activity_mbq"] for row in profile_rows],
         dtype=np.float64,
     )
 
@@ -1350,16 +1356,15 @@ def plot_ctac_planar_fixed_crop_qspect_ratio(
         marker="o",
         linewidth=2,
         color="tab:green",
-        label="CTAC Planar / Q/SPECT",
+        label="Planaire CTAC par profil / Q/SPECT",
     )
-    ax.set_title("Ratio CTAC Planar / Q/SPECT")
+    ax.set_title("Ratio planaire CTAC par profil / Q/SPECT")
     ax.set_xlabel("Temps après la première acquisition (jours)")
-    ax.set_ylabel("Ratio d'activité CTAC Planar / Q/SPECT")
+    ax.set_ylabel("Activité planaire CTAC / activité Q/SPECT")
     ax.grid(True, linestyle="--", alpha=0.3)
     ax.legend(frameon=False)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -1426,41 +1431,31 @@ def run_ct_attenuation_correction(
         crop_strategy="fixed_day0", align_pa_to_ap=align_pa_to_ap,
     )
     report_path = write_ct_attenuation_correction_report(rows)
-    fixed_report_path = write_ct_attenuation_correction_report(
-        fixed_rows,
-        CT_CORRECTION_DIR / "ct_attenuation_correction_report_fixed_day0.txt",
-    )
     ct_qc_report_path = write_ct_factor_map_statistics_report(rows)
     crop_report_path = write_crop_alignment_report(rows)
-    fixed_crop_report_path = write_crop_alignment_report(fixed_rows, CT_FIXED_CROP_ALIGNMENT_REPORT_PATH)
     strategy_report_path = write_crop_strategy_comparison_report(individual_rows, fixed_rows)
     figure_path = plot_ct_attenuation_correction(rows)
     strategy_figure_path = plot_crop_strategy_comparison(individual_rows, fixed_rows)
-    ctac_planar_fixed_crop_path = plot_ctac_planar_fixed_crop_vs_qspect(fixed_rows)
-    ctac_planar_fixed_crop_ratio_path = plot_ctac_planar_fixed_crop_qspect_ratio(fixed_rows)
+    profile_activity_path = plot_ctac_planar_profile_vs_qspect(rows)
+    profile_ratio_path = plot_ctac_planar_profile_qspect_ratio(rows)
     activity_crop_comparison_path = plot_ct_attenuation_activity_crop_comparison(individual_rows, fixed_rows)
     map_path = plot_ct_attenuation_maps(rows[0])
     ct_qc_paths = plot_all_ct_projection_qc(rows)
     crop_paths = plot_all_crop_comparisons(rows)
-    fixed_crop_paths = [plot_crop_comparison_by_day(row, CT_FIXED_CROP_BY_DAY_DIR) for row in fixed_rows]
     print(f"Saved CT correction report: {report_path}")
-    print(f"Saved fixed Day0 CT correction report: {fixed_report_path}")
     print(f"Saved CT factor-map QC report: {ct_qc_report_path}")
     print(f"Saved crop alignment report: {crop_report_path}")
-    print(f"Saved fixed Day0 crop alignment report: {fixed_crop_report_path}")
     print(f"Saved crop strategy report: {strategy_report_path}")
     print(f"Saved default profile-matched CT correction figure: {figure_path}")
     print(f"Saved crop strategy figure: {strategy_figure_path}")
-    print(f"Saved CTAC Planar fixed-crop figure: {ctac_planar_fixed_crop_path}")
-    print(f"Saved CTAC Planar/Q-SPECT ratio figure: {ctac_planar_fixed_crop_ratio_path}")
+    print(f"Saved profile-crop CTAC/Q-SPECT activity figure: {profile_activity_path}")
+    print(f"Saved profile-crop CTAC/Q-SPECT ratio figure: {profile_ratio_path}")
     print(f"Saved CT activity crop comparison figure: {activity_crop_comparison_path}")
     print(f"Saved CT correction map figure: {map_path}")
     print(f"Saved CT projection QC figures in: {CT_PROJECTION_QC_DIR}")
     print(f"Saved {len(ct_qc_paths)} CT projection QC PNG files")
     print(f"Saved crop comparison figures in: {CT_CROP_BY_DAY_DIR}")
     print(f"Saved {len(crop_paths)} crop comparison PNG files")
-    print(f"Saved fixed Day0 crop comparison figures in: {CT_FIXED_CROP_BY_DAY_DIR}")
-    print(f"Saved {len(fixed_crop_paths)} fixed Day0 crop comparison PNG files")
     for row in rows:
         print(
             f"day={row['day_offset']:.2f} | "

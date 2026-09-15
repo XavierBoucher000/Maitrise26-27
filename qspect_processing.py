@@ -21,6 +21,13 @@ def find_dicom_series_dirs(root_dir: Path) -> List[Path]:
     return sorted(path for path in root_dir.iterdir() if path.is_dir() and any(path.glob("*.dcm")))
 
 
+def is_primary_qspect_description(description: str) -> bool:
+    """Return whether a description names the primary quantitative WB volume."""
+    return re.fullmatch(
+        r"WB\s+QSPECT\s+Day\d+", description.strip(), re.IGNORECASE
+    ) is not None
+
+
 def is_qspect_series_dir(series_dir: Path) -> bool:
     first_file = next(series_dir.glob("*.dcm"), None)
     if first_file is None:
@@ -28,7 +35,16 @@ def is_qspect_series_dir(series_dir: Path) -> bool:
     ds = pydicom.dcmread(first_file, stop_before_pixels=True, force=True)
     modality = str(getattr(ds, "Modality", ""))
     description = str(getattr(ds, "SeriesDescription", ""))
-    return modality == "PT" and "QSPECT" in description.upper()
+    # Keep only the quantitative whole-body reconstruction.  Export folders can
+    # also contain MIP, fusion, or alternate reconstructions whose description
+    # includes "QSPECT" but which are not the activity volume used as target.
+    return modality == "PT" and is_primary_qspect_description(description)
+
+
+def expected_series_file_count(series_dir: Path) -> Optional[int]:
+    """Return the export-declared file count from a ``_n123__`` folder name."""
+    match = re.search(r"_n(\d+)__", series_dir.name)
+    return None if match is None else int(match.group(1))
 
 
 def find_qspect_series_dirs(root_dir: Path) -> List[Path]:
@@ -86,6 +102,12 @@ def load_qspect_series(series_dir: Path, index: int = 0) -> Dict[str, Any]:
     files = sorted(series_dir.glob("*.dcm"), key=sort_key_for_slice)
     if not files:
         raise ValueError(f"No DICOM files found in {series_dir}")
+    expected_count = expected_series_file_count(series_dir)
+    if expected_count is not None and len(files) != expected_count:
+        raise ValueError(
+            f"Incomplete Q/SPECT series {series_dir.name}: "
+            f"found {len(files)} of {expected_count} DICOM files"
+        )
 
     slices = []
     raw_total = 0.0
@@ -135,11 +157,26 @@ def load_qspect_series(series_dir: Path, index: int = 0) -> Dict[str, Any]:
     }
 
 
-def load_qspect_study(root_dir: Path) -> List[Dict[str, Any]]:
+def load_qspect_study(
+    root_dir: Path, skip_incomplete_series: bool = False
+) -> List[Dict[str, Any]]:
     series_dirs = find_qspect_series_dirs(root_dir)
     if not series_dirs:
         raise ValueError(f"No PT/QSPECT series found in {root_dir}")
-    series = [load_qspect_series(series_dir, index) for index, series_dir in enumerate(series_dirs)]
+    if skip_incomplete_series:
+        series_dirs = [
+            series_dir
+            for series_dir in series_dirs
+            if expected_series_file_count(series_dir) is None
+            or len(list(series_dir.glob("*.dcm")))
+            == expected_series_file_count(series_dir)
+        ]
+        if not series_dirs:
+            raise ValueError(f"No complete PT/QSPECT series found in {root_dir}")
+    series = [
+        load_qspect_series(series_dir, index)
+        for index, series_dir in enumerate(series_dirs)
+    ]
     return sorted(
         series,
         key=lambda item: (
@@ -339,7 +376,12 @@ def run_qspect_workflow(root_dir: Path) -> None:
 
 def default_qspect_dir() -> Path:
     base = Path(__file__).resolve().parent
-    data_path = base / "data" / "2026-05_studies" / "2026-05__Studies"
+    data_path = (
+        base
+        / "Data"
+        / "patient 1"
+        / "2026-05__Studies"
+    )
     if data_path.exists():
         return data_path
     return base / "2026-05__Studiesv2"

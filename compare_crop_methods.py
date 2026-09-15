@@ -30,11 +30,12 @@ from scipy.ndimage import gaussian_filter, gaussian_filter1d
 
 import attenuation_correction as ac
 import ct_attenuation_correction as ctac
+import figure_layout
 import planar_processing
 import qspect_processing
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "crop_method_comparison"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 BOUNDS_FIGURE_PATH = OUTPUT_DIR / "crop_bounds_four_methods.png"
 METRICS_FIGURE_PATH = OUTPUT_DIR / "crop_metrics_four_methods.png"
 ACTIVITY_FIGURE_PATH = OUTPUT_DIR / "activity_curves_four_crop_methods.png"

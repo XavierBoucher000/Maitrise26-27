@@ -15,17 +15,19 @@ import numpy as np
 
 import attenuation_correction
 import ct_attenuation_correction as ctac
+import figure_layout
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "HU_conversion_comparison"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
+SHARED_OUTPUT_DIR = figure_layout.shared_dir(__file__)
 ALIGN_PA_TO_AP = True
-CALIBRATION_FIGURE = OUTPUT_DIR / "raystation_hu_to_mass_density.png"
+CALIBRATION_FIGURE = SHARED_OUTPUT_DIR / "raystation_hu_to_mass_density.png"
 RAYSTATION_SINGLE_CURVE_FIGURE = (
-    OUTPUT_DIR / "raystation_hu_to_mass_density_single_curve.png"
+    SHARED_OUTPUT_DIR / "raystation_hu_to_mass_density_single_curve.png"
 )
-PROJECT_CALIBRATION_FIGURE = OUTPUT_DIR / "hu_to_mass_density_calibration_used.png"
-CATPHAN_CALIBRATION_FIGURE = OUTPUT_DIR / "catphan_t2_110kvp_hu_to_mu2084.png"
-CATPHAN_VALUES_FILE = OUTPUT_DIR / "catphan_t2_110kvp_hu_to_mu2084_values.csv"
+PROJECT_CALIBRATION_FIGURE = SHARED_OUTPUT_DIR / "hu_to_mass_density_calibration_used.png"
+CATPHAN_CALIBRATION_FIGURE = SHARED_OUTPUT_DIR / "catphan_t2_110kvp_hu_to_mu2084.png"
+CATPHAN_VALUES_FILE = SHARED_OUTPUT_DIR / "catphan_t2_110kvp_hu_to_mu2084_values.csv"
 ACTIVITY_FIGURE = OUTPUT_DIR / "ctac_profile_crop_conversion_comparison.png"
 TEMPORAL_DIFFERENCE_FIGURE = OUTPUT_DIR / "ctac_conversion_difference_over_time.png"
 VALUES_FILE = OUTPUT_DIR / "ctac_conversion_comparison_values.csv"
@@ -413,6 +415,7 @@ def write_values(values: Dict[str, np.ndarray], output_path: Path = VALUES_FILE)
 
 def run_comparison() -> Dict[str, Any]:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    SHARED_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     calibration_path = plot_hu_to_density_calibration()
     raystation_single_curve_path = plot_raystation_hu_to_density_single_curve()
     project_calibration_path = plot_project_hu_to_density_calibration()

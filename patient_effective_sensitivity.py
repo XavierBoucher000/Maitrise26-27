@@ -33,6 +33,7 @@ import numpy as np
 
 import attenuation_correction as ac
 import dicom_loader
+import figure_layout
 import planar_processing
 import planar_qspect_crop
 import planar_qspect_profile_crop
@@ -40,7 +41,7 @@ import qspect_processing
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_DIR = PROJECT_DIR / "fig" / "patient_effective_sensitivity"
+DEFAULT_OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 DEFAULT_PATIENT_LABEL = "Patient 1"
 LU177_PHYSICAL_HALF_LIFE_H = 159.5
 REFERENCE_CAMERA_SENSITIVITY_CPS_PER_MBQ = (
@@ -136,6 +137,7 @@ def _pair_acquisitions_by_time(
     planar_scans: Sequence[Dict[str, Any]],
     qspect_series: Sequence[Dict[str, Any]],
     max_time_difference_h: float,
+    allow_unpaired_planar: bool = False,
 ) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
     """Pair each planar scan to the nearest unused Q/SPECT acquisition."""
     remaining = list(qspect_series)
@@ -148,6 +150,8 @@ def _pair_acquisitions_by_time(
             item for item in remaining if item.get("acquisition_datetime") is not None
         ]
         if not candidates:
+            if allow_unpaired_planar:
+                continue
             raise ValueError("No unused Q/SPECT acquisition remains for time pairing")
         qspect = min(
             candidates,
@@ -159,6 +163,8 @@ def _pair_acquisitions_by_time(
             (qspect["acquisition_datetime"] - planar_time).total_seconds()
         ) / 3600.0
         if difference_h > max_time_difference_h:
+            if allow_unpaired_planar:
+                continue
             raise ValueError(
                 f"Nearest Q/SPECT is {difference_h:.2f} h from planar scan; "
                 f"maximum allowed is {max_time_difference_h:.2f} h"
@@ -204,6 +210,8 @@ def calculate_patient_effective_sensitivity(
     align_pa_to_ap: bool = planar_processing.ALIGN_PA_TO_AP,
     half_life_h: float = LU177_PHYSICAL_HALF_LIFE_H,
     max_time_difference_h: float = 6.0,
+    skip_incomplete_qspect: bool = False,
+    allow_unpaired_planar: bool = False,
 ) -> List[Dict[str, Any]]:
     """Calculate raw and TEW effective sensitivities without loading any CT."""
     if crop_strategy not in {"profile_qspect", "fixed_day0", "individual"}:
@@ -212,14 +220,19 @@ def calculate_patient_effective_sensitivity(
         )
 
     planar_scans = ac.sorted_planar_scans(Path(planar_dir))
-    qspect_series = qspect_processing.load_qspect_study(Path(qspect_dir))
+    qspect_series = qspect_processing.load_qspect_study(
+        Path(qspect_dir), skip_incomplete_series=skip_incomplete_qspect
+    )
     if not planar_scans or not qspect_series:
         raise ValueError("Planar and Q/SPECT acquisitions are required")
     pairs = _pair_acquisitions_by_time(
         planar_scans,
         qspect_series,
         max_time_difference_h=max_time_difference_h,
+        allow_unpaired_planar=allow_unpaired_planar,
     )
+    if not pairs:
+        raise ValueError("No planar/Q/SPECT acquisition pairs passed the time criterion")
 
     prepared = [
         (scan, qspect, _emission_images(scan, align_pa_to_ap=align_pa_to_ap))

@@ -1,7 +1,19 @@
 import numpy as np
 import pytest
+from pathlib import Path
 
 import patient_sensitivity_feature_test_v2 as feature_test
+
+
+def test_organized_output_dir_uses_script_patient_cycle_hierarchy():
+    output = feature_test.organized_output_dir("patient2", "cycle1")
+    assert output == (
+        feature_test.PROJECT_DIR
+        / "fig"
+        / "patient_sensitivity_feature_test_v2"
+        / "patient 2"
+        / "2026-06__Studies"
+    )
 
 
 def test_loo_activity_error_is_zero_for_exact_log_linear_relation():
@@ -34,3 +46,12 @@ def test_prediction_metrics_reports_inverse_effect_on_activity():
     )
     assert metrics["sensitivity_bias_percent"] == pytest.approx(10.0)
     assert metrics["activity_bias_percent"] == pytest.approx(-100.0 / 11.0)
+
+
+def test_full_training_coefficients_recover_exact_power_relation():
+    feature = np.log(np.array([0.2, 0.3, 0.4, 0.5]))
+    target = 4.0 * np.exp(-0.7 * feature)
+    intercept, slope = feature_test._fit_log_linear_coefficients(feature, target)
+
+    assert intercept == pytest.approx(np.log(4.0))
+    assert slope == pytest.approx(-0.7)

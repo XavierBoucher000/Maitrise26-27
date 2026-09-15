@@ -10,11 +10,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import figure_layout
 import planar_processing
 
 
 ROOT = PROJECT_ROOT
-OUT_DIR = ROOT / "fig" / "dead_time"
+OUT_DIR = figure_layout.patient_cycle_dir(__file__)
 OUT_PATH = OUT_DIR / "planar_dead_time_correction_report.txt"
 DTCF_FIGURE_PATH = OUT_DIR / "planar_dead_time_dtcf_summary.png"
 

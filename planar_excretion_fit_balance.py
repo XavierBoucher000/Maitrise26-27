@@ -27,11 +27,12 @@ import numpy as np
 from matplotlib.patches import Patch
 from scipy.optimize import least_squares
 
+import figure_layout
 import sang_urine
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = PROJECT_DIR / "fig" / "planar_excretion_fit_balance"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 VALUES_PATH = OUTPUT_DIR / "planar_excretion_fit_balance_values.csv"
 REPORT_PATH = OUTPUT_DIR / "planar_excretion_fit_balance_report.txt"
 

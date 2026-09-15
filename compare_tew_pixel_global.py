@@ -30,11 +30,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import attenuation_correction as ac
+import figure_layout
 import planar_processing
 import qspect_processing
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "ct_correction" / "tew_pixel_vs_global"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 REPORT_PATH = OUTPUT_DIR / "tew_pixel_vs_global_report.txt"
 ACTIVITY_FIGURE_PATH = OUTPUT_DIR / "tew_activity_comparison.png"
 TEW_EFFECT_FIGURE_PATH = OUTPUT_DIR / "tew_effect_vs_no_tew.png"

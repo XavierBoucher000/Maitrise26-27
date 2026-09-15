@@ -13,11 +13,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import correction_3DEW as c3
 import dicom_loader
+import figure_layout
 import planar_processing
 
 
 ROOT = PROJECT_ROOT
-OUT_DIR = ROOT / "fig" / "attenuation"
+OUT_DIR = figure_layout.patient_cycle_dir(__file__)
 COUNTS_FIGURE_PATH = OUT_DIR / "raw_window_counts_by_day.png"
 COUNTS_ZOOM_FIGURE_PATH = OUT_DIR / "raw_window_counts_by_day_zoom_no_low_energy.png"
 RATIOS_FIGURE_PATH = OUT_DIR / "window_ratios_by_day.png"

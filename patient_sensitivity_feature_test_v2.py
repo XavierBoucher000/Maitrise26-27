@@ -29,19 +29,53 @@ import numpy as np
 import acquisition_timeline
 import attenuation_correction as ac
 import attenuation_global_model_v2 as spectral_model
+import figure_layout
 import patient_effective_sensitivity as sensitivity
 import planar_processing
 import qspect_processing
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_DIR = PROJECT_DIR / "fig" / "patient_sensitivity_features_v2"
+SCRIPT_NAME = Path(__file__).stem
+DEFAULT_PATIENT_ID = "patient1"
+DEFAULT_CYCLE_ID = "cycle1"
 LOCKED_FEATURE = spectral_model.BROAD_FEATURE_NAME
 ELIGIBLE_FEATURES = (
     *spectral_model.ALL_FEATURE_NAMES,
     "TEW retained fraction",
 )
 CROP_OFFSETS_PIXELS = (-10, -5, 0, 5, 10)
+
+
+CYCLE_DATASETS = {
+    ("patient1", "cycle1"): {
+        "patient_label": "Patient 1",
+        "figure_patient": "patient 1",
+        "figure_cycle": "2026-05__Studies",
+        "planar_dir": PROJECT_DIR / "Data/patient 1/2026-05__Studies_WBP",
+        "qspect_dir": PROJECT_DIR / "Data/patient 1/2026-05__Studies",
+    },
+    ("patient2", "cycle1"): {
+        "patient_label": "Patient 2",
+        "figure_patient": "patient 2",
+        "figure_cycle": "2026-06__Studies",
+        "planar_dir": PROJECT_DIR / "Data/patient 2/2026-06__Studies_WBP",
+        "qspect_dir": PROJECT_DIR / "Data/patient 2/2026-06__Studies",
+    },
+}
+
+
+def organized_output_dir(patient_id: str, cycle_id: str) -> Path:
+    """Return ``fig/<script>/<patient>/<cycle>`` for this analysis."""
+    configured = CYCLE_DATASETS.get((patient_id, cycle_id))
+    if configured is None:
+        return figure_layout.patient_cycle_dir(__file__, patient_id, cycle_id)
+    return figure_layout.patient_cycle_dir(
+        __file__, configured["figure_patient"], configured["figure_cycle"]
+    )
+
+
+DEFAULT_OUTPUT_DIR = organized_output_dir(DEFAULT_PATIENT_ID, DEFAULT_CYCLE_ID)
 
 
 def _fit_log_linear_predict(
@@ -61,6 +95,23 @@ def _fit_log_linear_predict(
     design = np.column_stack([np.ones(x_train.size), x_train])
     intercept, slope = np.linalg.lstsq(design, np.log(y_train), rcond=None)[0]
     return float(np.exp(intercept + slope * float(x_test))), float(slope)
+
+
+def _fit_log_linear_coefficients(
+    feature: Sequence[float], target_sensitivity: Sequence[float]
+) -> Tuple[float, float]:
+    """Fit ``log(S_eff)=intercept+slope*feature`` on a complete training set."""
+    x = np.asarray(feature, dtype=np.float64)
+    y = np.asarray(target_sensitivity, dtype=np.float64)
+    if x.ndim != 1 or y.shape != x.shape or x.size < 2:
+        raise ValueError("At least two paired training values are required")
+    if np.any(~np.isfinite(x)) or np.any(~np.isfinite(y)) or np.any(y <= 0.0):
+        raise ValueError("Training feature must be finite and target must be positive")
+    if float(np.ptp(x)) <= np.finfo(float).eps:
+        return float(np.mean(np.log(y))), 0.0
+    design = np.column_stack([np.ones(x.size), x])
+    intercept, slope = np.linalg.lstsq(design, np.log(y), rcond=None)[0]
+    return float(intercept), float(slope)
 
 
 def _prediction_metrics(
@@ -418,6 +469,222 @@ def build_analysis(
     }
 
 
+def build_partial_observations(
+    planar_dir: Path,
+    qspect_dir: Path,
+    skip_incomplete_qspect: bool,
+) -> Dict[str, Any]:
+    """Build emission features for all valid pairs without fitting a model."""
+    rows = sensitivity.calculate_patient_effective_sensitivity(
+        planar_dir=Path(planar_dir),
+        qspect_dir=Path(qspect_dir),
+        crop_strategy="profile_qspect",
+        skip_incomplete_qspect=skip_incomplete_qspect,
+        allow_unpaired_planar=skip_incomplete_qspect,
+    )
+    scans_by_name = {
+        str(scan["scan_name"]): scan
+        for scan in ac.sorted_planar_scans(Path(planar_dir))
+    }
+    scans = [scans_by_name[str(row["planar_scan_name"])] for row in rows]
+    spectral_rows = [
+        spectral_model.global_spectral_features(
+            scan,
+            (int(row["crop_top"]), int(row["crop_bottom"])),
+            require_broad_low_energy=True,
+        )
+        for scan, row in zip(scans, rows)
+    ]
+    return {
+        "labels": [str(row["label"]) for row in rows],
+        "days": np.asarray([row["planar_day"] for row in rows], dtype=np.float64),
+        "rows": rows,
+        "feature": np.asarray(
+            [item["features"][LOCKED_FEATURE] for item in spectral_rows],
+            dtype=np.float64,
+        ),
+        "target_sensitivity": np.asarray(
+            [row["tew_effective_sensitivity_cps_per_mbq"] for row in rows],
+            dtype=np.float64,
+        ),
+        "tew_rate": np.asarray(
+            [row["tew_gm_cps"] for row in rows], dtype=np.float64
+        ),
+    }
+
+
+def run_locked_external_validation(
+    training_planar_dir: Path,
+    training_qspect_dir: Path,
+    evaluation_planar_dir: Path,
+    evaluation_qspect_dir: Path,
+    output_dir: Path,
+    training_label: str = "Patient 1",
+    evaluation_label: str = "Patient 2",
+) -> Dict[str, Any]:
+    """Apply the patient-1 spectral model unchanged to complete external days."""
+    training = build_partial_observations(
+        training_planar_dir, training_qspect_dir, skip_incomplete_qspect=False
+    )
+    evaluation = build_partial_observations(
+        evaluation_planar_dir, evaluation_qspect_dir, skip_incomplete_qspect=True
+    )
+    intercept, slope = _fit_log_linear_coefficients(
+        training["feature"], training["target_sensitivity"]
+    )
+    predicted_sensitivity = np.exp(intercept + slope * evaluation["feature"])
+    metrics = _prediction_metrics(
+        evaluation["target_sensitivity"], predicted_sensitivity
+    )
+    reference_activity = evaluation["tew_rate"] / evaluation["target_sensitivity"]
+    predicted_activity = evaluation["tew_rate"] / predicted_sensitivity
+
+    incomplete = []
+    for series_dir in qspect_processing.find_qspect_series_dirs(evaluation_qspect_dir):
+        expected = qspect_processing.expected_series_file_count(series_dir)
+        actual = len(list(series_dir.glob("*.dcm")))
+        if expected is not None and actual != expected:
+            incomplete.append(
+                {"series": series_dir.name, "actual": actual, "expected": expected}
+            )
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "v2_external_validation.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(
+            [
+                "label", "planar_datetime", "qspect_datetime", LOCKED_FEATURE,
+                "observed_sensitivity_cps_per_mbq",
+                "predicted_sensitivity_cps_per_mbq", "qspect_activity_mbq",
+                "predicted_activity_mbq", "predicted_over_qspect",
+                "activity_error_percent",
+            ]
+        )
+        for index, row in enumerate(evaluation["rows"]):
+            predicted_over_qspect = predicted_activity[index] / reference_activity[index]
+            writer.writerow(
+                [
+                    evaluation["labels"][index], row["planar_datetime"],
+                    row["qspect_datetime"], evaluation["feature"][index],
+                    evaluation["target_sensitivity"][index],
+                    predicted_sensitivity[index], reference_activity[index],
+                    predicted_activity[index], predicted_over_qspect,
+                    100.0 * (predicted_over_qspect - 1.0),
+                ]
+            )
+
+    activity_ratio = predicted_activity / reference_activity
+    fig, ax = plt.subplots(figsize=(8.6, 5.4), layout="constrained")
+    ax.axhspan(0.90, 1.10, color="#2E9F55", alpha=0.10, label="Écart de ±10 %")
+    ax.axhline(1.0, color="black", linewidth=1.3, label="Q/SPECT")
+    ax.plot(
+        evaluation["labels"], activity_ratio, "D-", color="#2E9F55",
+        linewidth=2.3, markersize=8, label="Modèle spectral verrouillé",
+    )
+    for label, value in zip(evaluation["labels"], activity_ratio):
+        ax.annotate(
+            f"{value:.3f}", (label, value), xytext=(0, 8),
+            textcoords="offset points", ha="center", fontweight="bold",
+        )
+    ax.set_ylabel("Activité prédite / activité Q/SPECT")
+    ax.set_xlabel("Timepoint complet du patient 2")
+    ax.set_title("Test externe partiel du modèle entraîné sur le patient 1")
+    ax.grid(axis="y", linestyle="--", alpha=0.28)
+    ax.legend(frameon=False)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.savefig(
+        output_dir / "v2_external_ratio_prediction_qspect.png",
+        dpi=300, bbox_inches="tight",
+    )
+    plt.close(fig)
+
+    ratio_train = np.exp(training["feature"])
+    ratio_evaluation = np.exp(evaluation["feature"])
+    ratio_grid = np.linspace(
+        min(np.min(ratio_train), np.min(ratio_evaluation)) * 0.98,
+        max(np.max(ratio_train), np.max(ratio_evaluation)) * 1.02,
+        200,
+    )
+    fitted_grid = np.exp(intercept + slope * np.log(ratio_grid))
+    fig, ax = plt.subplots(figsize=(8.6, 5.5), layout="constrained")
+    ax.plot(
+        ratio_grid, fitted_grid, color="#1769AA", linewidth=2.3,
+        label=f"Fit verrouillé — {training_label}",
+    )
+    ax.scatter(
+        ratio_train, training["target_sensitivity"], s=65,
+        color="#1769AA", alpha=0.65, label=f"{training_label} — entraînement",
+    )
+    ax.scatter(
+        ratio_evaluation, evaluation["target_sensitivity"], s=90,
+        color="#D95F4A", marker="D", label=f"{evaluation_label} — observé",
+    )
+    ax.scatter(
+        ratio_evaluation, predicted_sensitivity, s=105, facecolors="none",
+        edgecolors="#2E9F55", linewidths=2.0,
+        label=f"{evaluation_label} — prédit",
+    )
+    ax.set_xlabel("Rapport fenêtre large de basse énergie / photopeak")
+    ax.set_ylabel("Sensibilité effective avec TEW (cps/MBq)")
+    ax.set_title("Transfert sans réajustement vers le patient 2")
+    ax.grid(True, linestyle="--", alpha=0.28)
+    ax.legend(frameon=False)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.savefig(
+        output_dir / "v2_external_sensitivity_relation.png",
+        dpi=300, bbox_inches="tight",
+    )
+    plt.close(fig)
+
+    lines = [
+        "Locked external validation — partial patient 2 dataset",
+        "======================================================",
+        "",
+        f"Training: {training_label}, n={len(training['labels'])}",
+        f"Evaluation: {evaluation_label}, n={len(evaluation['labels'])}",
+        f"Locked feature: {LOCKED_FEATURE}",
+        "No coefficient was refitted on the evaluation patient.",
+        "",
+        f"Activity MARE: {metrics['activity_mare_percent']:.2f}%",
+        f"Activity bias: {metrics['activity_bias_percent']:+.2f}%",
+        f"Maximum absolute activity error: {metrics['maximum_activity_error_percent']:.2f}%",
+        "",
+        "Incomplete Q/SPECT series excluded:",
+    ]
+    lines.extend(
+        f"  {item['actual']}/{item['expected']} files — {item['series']}"
+        for item in incomplete
+    )
+    lines.extend(
+        [
+            "",
+            "Interpretation:",
+            "  This is a partial external test on complete timepoints only.",
+            "  It does not replace the planned three-timepoint patient-2 validation.",
+        ]
+    )
+    (output_dir / "v2_external_validation_report.txt").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+    print(
+        f"External {evaluation_label} activity MARE="
+        f"{metrics['activity_mare_percent']:.2f}% on "
+        f"{len(evaluation['labels'])} complete timepoints"
+    )
+    print(f"Saved outputs to {output_dir}")
+    return {
+        "training": training,
+        "evaluation": evaluation,
+        "predicted_sensitivity": predicted_sensitivity,
+        "predicted_activity": predicted_activity,
+        "reference_activity": reference_activity,
+        "metrics": metrics,
+        "incomplete_series": incomplete,
+    }
+
+
 def _method_rows(analysis: Dict[str, Any], target_name: str) -> List[Dict[str, Any]]:
     rows = []
     for name, result in analysis["results"][target_name].items():
@@ -582,7 +849,9 @@ def write_outputs(
     (output_dir / "v2_univariate_report.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def plot_outputs(analysis: Dict[str, Any], output_dir: Path) -> None:
+def plot_outputs(
+    analysis: Dict[str, Any], output_dir: Path, patient_label: str
+) -> None:
     methods = ["constant sensitivity", "elapsed time", *ELIGIBLE_FEATURES]
     fig, axes = plt.subplots(2, 1, figsize=(12, 9), layout="constrained")
     for axis, target_name, title in zip(
@@ -658,6 +927,245 @@ def plot_outputs(analysis: Dict[str, Any], output_dir: Path) -> None:
     fig.savefig(output_dir / "v2_robustness.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
+    plot_presentation_outputs(analysis, output_dir, patient_label)
+
+
+def _annotate_bars(axis: plt.Axes, bars: Any, decimals: int = 1) -> None:
+    """Write compact values above positive bars."""
+    for bar in bars:
+        height = float(bar.get_height())
+        axis.annotate(
+            f"{height:.{decimals}f}",
+            xy=(bar.get_x() + bar.get_width() / 2.0, height),
+            xytext=(0, 4),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            fontweight="bold",
+        )
+
+
+def plot_presentation_outputs(
+    analysis: Dict[str, Any], output_dir: Path, patient_label: str
+) -> None:
+    """Create slide-ready figures with one scientific message per image."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    days = np.asarray(analysis["days"], dtype=np.float64)
+    labels = [str(row["label"]) for row in analysis["sensitivity_rows"]]
+    locked_raw = analysis["results"]["raw"][LOCKED_FEATURE]
+    locked_tew = analysis["results"]["tew"][LOCKED_FEATURE]
+    time_raw = analysis["results"]["raw"]["elapsed time"]
+    time_tew = analysis["results"]["tew"]["elapsed time"]
+
+    # 1. Compact comparison of the only three hypotheses that matter for the talk.
+    method_labels = ["Sensibilité\nconstante", "Temps\nseulement", "Ratio spectral\nplanaire"]
+    raw_values = np.asarray(
+        [
+            locked_raw["constant_activity_mare_percent"],
+            time_raw["activity_mare_percent"],
+            locked_raw["activity_mare_percent"],
+        ]
+    )
+    tew_values = np.asarray(
+        [
+            locked_tew["constant_activity_mare_percent"],
+            time_tew["activity_mare_percent"],
+            locked_tew["activity_mare_percent"],
+        ]
+    )
+    x = np.arange(len(method_labels), dtype=np.float64)
+    width = 0.34
+    colors = ["#7A7A7A", "#8C6BB1", "#2E9F55"]
+    fig, ax = plt.subplots(figsize=(9.2, 5.7), layout="constrained")
+    raw_bars = ax.bar(
+        x - width / 2.0,
+        raw_values,
+        width,
+        color=colors,
+        alpha=0.42,
+        edgecolor=colors,
+        linewidth=1.5,
+        label="Sans correction du diffusé",
+    )
+    tew_bars = ax.bar(
+        x + width / 2.0,
+        tew_values,
+        width,
+        color=colors,
+        alpha=0.95,
+        edgecolor=colors,
+        linewidth=1.0,
+        label="Avec correction TEW",
+    )
+    _annotate_bars(ax, raw_bars)
+    _annotate_bars(ax, tew_bars)
+    ax.set_xticks(x, method_labels)
+    ax.set_ylabel("Erreur absolue moyenne sur l’activité (%)")
+    ax.set_title("Le ratio spectral améliore la prédiction de l’activité")
+    ax.text(
+        0.5,
+        -0.18,
+        f"Validation leave-one-timepoint-out — {patient_label} (n = {len(days)})",
+        transform=ax.transAxes,
+        ha="center",
+        va="top",
+        color="0.35",
+    )
+    ax.set_ylim(0.0, max(np.max(raw_values), np.max(tew_values)) * 1.20)
+    ax.grid(axis="y", linestyle="--", alpha=0.28)
+    ax.legend(frameon=False, loc="upper right")
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.savefig(output_dir / "v2_comparaison_modeles.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # 2. Visual explanation of the fitted univariate relationship.
+    spectral_ratio = np.exp(np.asarray(analysis["features"][LOCKED_FEATURE], dtype=np.float64))
+    tew_target = np.asarray(analysis["targets"]["tew"], dtype=np.float64)
+    beta, log_scale = np.polyfit(np.log(spectral_ratio), np.log(tew_target), 1)
+    ratio_grid = np.linspace(np.min(spectral_ratio) * 0.985, np.max(spectral_ratio) * 1.015, 200)
+    fitted_grid = np.exp(log_scale) * ratio_grid**beta
+    fig, ax = plt.subplots(figsize=(8.6, 5.7), layout="constrained")
+    ax.plot(ratio_grid, fitted_grid, color="#2E9F55", linewidth=2.4, label="Ajustement log-linéaire")
+    ax.scatter(
+        spectral_ratio,
+        tew_target,
+        s=80,
+        color="#1769AA",
+        edgecolor="white",
+        linewidth=1.0,
+        zorder=3,
+    )
+    for ratio, sensitivity_value, label in zip(spectral_ratio, tew_target, labels):
+        ax.annotate(label, (ratio, sensitivity_value), xytext=(7, 5), textcoords="offset points")
+    ax.set_xlabel("Rapport fenêtre large de basse énergie / photopeak")
+    ax.set_ylabel("Sensibilité effective avec TEW (cps/MBq)")
+    ax.set_title("Le ratio spectral suit la variation de sensibilité effective")
+    ax.text(
+        0.03,
+        0.06,
+        rf"$S_{{\mathrm{{eff}}}} = {np.exp(log_scale):.2f}\,r^{{{beta:.2f}}}$",
+        transform=ax.transAxes,
+        fontsize=12,
+        bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.8"},
+    )
+    ax.text(
+        0.5,
+        -0.18,
+        "Relation descriptive; la performance est évaluée séparément par validation LOO",
+        transform=ax.transAxes,
+        ha="center",
+        va="top",
+        color="0.35",
+    )
+    ax.grid(True, linestyle="--", alpha=0.28)
+    ax.legend(frameon=False)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.savefig(output_dir / "v2_relation_ratio_sensibilite.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # 3. Normalize by Q/SPECT so that late timepoints are not hidden by Day0.
+    tew_rate = np.asarray(analysis["rates"]["tew"], dtype=np.float64)
+    reference_activity = tew_rate / tew_target
+    predicted_ratios = {
+        "Sensibilité constante": (tew_rate / locked_tew["constant_predictions"]) / reference_activity,
+        "Temps seulement": (tew_rate / time_tew["predictions"]) / reference_activity,
+        "Ratio spectral planaire": (tew_rate / locked_tew["predictions"]) / reference_activity,
+    }
+    fig, ax = plt.subplots(figsize=(9.2, 5.7), layout="constrained")
+    ax.axhspan(0.90, 1.10, color="#2E9F55", alpha=0.10, label="Écart de ±10 %")
+    ax.axhline(1.0, color="black", linewidth=1.4)
+    styles = {
+        "Sensibilité constante": ("#7A7A7A", "o", "--"),
+        "Temps seulement": ("#8C6BB1", "s", "--"),
+        "Ratio spectral planaire": ("#2E9F55", "D", "-"),
+    }
+    for name, values in predicted_ratios.items():
+        color, marker, linestyle = styles[name]
+        ax.plot(days, values, marker=marker, linestyle=linestyle, color=color, linewidth=2.2, label=name)
+    ax.set_xticks(days, labels)
+    ax.set_xlabel("Timepoint")
+    ax.set_ylabel("Activité prédite / activité Q/SPECT")
+    ax.set_title("Validation temporelle des prédictions avec TEW")
+    all_values = np.concatenate(list(predicted_ratios.values()))
+    margin = 0.06
+    ax.set_ylim(min(0.88, float(np.min(all_values)) - margin), max(1.12, float(np.max(all_values)) + margin))
+    ax.grid(axis="y", linestyle="--", alpha=0.28)
+    ax.legend(frameon=False, ncol=2)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.savefig(output_dir / "v2_ratio_prediction_qspect.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # 4. Signed held-out errors for the locked spectral feature alone.
+    locked_activity = tew_rate / locked_tew["predictions"]
+    signed_errors = 100.0 * (locked_activity / reference_activity - 1.0)
+    fig, ax = plt.subplots(figsize=(8.6, 5.4), layout="constrained")
+    ax.axhspan(-10.0, 10.0, color="#2E9F55", alpha=0.10, label="Écart de ±10 %")
+    bars = ax.bar(labels, signed_errors, color=["#D95F4A" if value > 0 else "#3B82B4" for value in signed_errors])
+    ax.axhline(0.0, color="black", linewidth=1.2)
+    for bar, value in zip(bars, signed_errors):
+        offset = 4 if value >= 0 else -5
+        va = "bottom" if value >= 0 else "top"
+        ax.annotate(
+            f"{value:+.1f} %",
+            (bar.get_x() + bar.get_width() / 2.0, value),
+            xytext=(0, offset),
+            textcoords="offset points",
+            ha="center",
+            va=va,
+            fontweight="bold",
+        )
+    limit = max(10.8, float(np.max(np.abs(signed_errors))) * 1.35)
+    ax.set_ylim(-limit, limit)
+    ax.set_xlabel("Timepoint exclu de l’ajustement")
+    ax.set_ylabel("Erreur relative signée sur l’activité (%)")
+    ax.set_title("Erreur du modèle spectral à chaque validation LOO")
+    ax.text(
+        0.5,
+        -0.18,
+        f"MARE = {locked_tew['activity_mare_percent']:.2f} %; erreur maximale = "
+        f"{locked_tew['maximum_activity_error_percent']:.2f} %",
+        transform=ax.transAxes,
+        ha="center",
+        va="top",
+        color="0.35",
+    )
+    ax.grid(axis="y", linestyle="--", alpha=0.28)
+    ax.legend(frameon=False, loc="lower right")
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.savefig(output_dir / "v2_erreur_par_timepoint.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    # 5. Split the former two-panel robustness figure into one message per file.
+    crop = analysis["crop_robustness"]
+    fig, ax = plt.subplots(figsize=(8.4, 5.3), layout="constrained")
+    ax.plot(
+        [row["crop_offset_cm"] for row in crop],
+        [row["activity_mare_percent"] for row in crop],
+        "o-",
+        linewidth=2.3,
+        color="#1769AA",
+    )
+    ax.axvline(0.0, color="0.45", linestyle="--")
+    ax.set_xlabel("Translation appliquée au crop (cm)")
+    ax.set_ylabel("Erreur absolue moyenne sur l’activité (%)")
+    ax.set_title("Le résultat varie peu avec la position du crop")
+    ax.grid(True, linestyle="--", alpha=0.28)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.savefig(output_dir / "v2_robustesse_crop.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8.4, 5.3), layout="constrained")
+    ax.plot(days, analysis["poisson_relative_percent"], "o-", linewidth=2.3, color="#D62728")
+    ax.set_xticks(days, labels)
+    ax.set_xlabel("Timepoint")
+    ax.set_ylabel("Incertitude relative approximative (%)")
+    ax.set_title("La composante de Poisson demeure inférieure à 0,6 %")
+    ax.grid(True, linestyle="--", alpha=0.28)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.savefig(output_dir / "v2_incertitude_poisson.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
 
 def run_analysis(
     planar_dir: Path = planar_processing.default_planar_study_dir(),
@@ -667,7 +1175,7 @@ def run_analysis(
 ) -> Dict[str, Any]:
     analysis = build_analysis(planar_dir, qspect_dir)
     write_outputs(analysis, Path(output_dir), patient_label)
-    plot_outputs(analysis, Path(output_dir))
+    plot_outputs(analysis, Path(output_dir), patient_label)
     locked = analysis["results"]["tew"][LOCKED_FEATURE]
     time_only = analysis["results"]["tew"]["elapsed time"]
     print(
@@ -686,12 +1194,40 @@ def run_analysis(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--planar-dir", type=Path, default=planar_processing.default_planar_study_dir())
-    parser.add_argument("--qspect-dir", type=Path, default=qspect_processing.default_qspect_dir())
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--patient-label", default="Patient 1")
+    parser.add_argument("--patient-id", default=DEFAULT_PATIENT_ID)
+    parser.add_argument("--cycle-id", default=DEFAULT_CYCLE_ID)
+    parser.add_argument("--planar-dir", type=Path)
+    parser.add_argument("--qspect-dir", type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--patient-label")
+    parser.add_argument(
+        "--external-validation",
+        action="store_true",
+        help="train on patient1/cycle1 and test only complete target timepoints",
+    )
     args = parser.parse_args()
-    run_analysis(args.planar_dir, args.qspect_dir, args.output_dir, args.patient_label)
+    configured = CYCLE_DATASETS.get((args.patient_id, args.cycle_id))
+    if configured is None and (args.planar_dir is None or args.qspect_dir is None):
+        raise ValueError(
+            f"Unknown dataset {args.patient_id}/{args.cycle_id}; "
+            "provide --planar-dir and --qspect-dir"
+        )
+    planar_dir = args.planar_dir or configured["planar_dir"]
+    qspect_dir = args.qspect_dir or configured["qspect_dir"]
+    output_dir = args.output_dir or organized_output_dir(args.patient_id, args.cycle_id)
+    patient_label = args.patient_label or (
+        configured["patient_label"] if configured else args.patient_id
+    )
+    if args.external_validation:
+        training = CYCLE_DATASETS[("patient1", "cycle1")]
+        run_locked_external_validation(
+            training["planar_dir"], training["qspect_dir"],
+            planar_dir, qspect_dir, output_dir,
+            training_label=training["patient_label"],
+            evaluation_label=patient_label,
+        )
+    else:
+        run_analysis(planar_dir, qspect_dir, output_dir, patient_label)
 
 
 if __name__ == "__main__":

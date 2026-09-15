@@ -22,16 +22,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import attenuation_correction as ac
+import figure_layout
 import planar_processing
 import qspect_processing
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_SOURCE_CSV = PROJECT_DIR / "Data" / "2026-05_studies" / "P-011csv.csv"
-DEFAULT_IMAGING_CSV = (
-    PROJECT_DIR / "fig" / "crop_method_comparison" / "crop_methods_values.csv"
+DEFAULT_SOURCE_CSV = (
+    PROJECT_DIR / "Data" / "patient 1" / "P-011csv.csv"
 )
-DEFAULT_OUTPUT_DIR = PROJECT_DIR / "fig" / "sang_urine"
+DEFAULT_IMAGING_CSV = (
+    figure_layout.patient_cycle_dir("compare_crop_methods.py")
+    / "crop_methods_values.csv"
+)
+DEFAULT_OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 
 
 def _cell(row: List[str], index: int) -> str:

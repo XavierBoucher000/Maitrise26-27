@@ -45,11 +45,12 @@ import numpy as np
 import attenuation_correction as ac
 import attenuation_window_model as patch_model
 import ct_attenuation_correction as ctac
+import figure_layout
 import planar_processing
 import qspect_processing
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "attenuation_global_model_v2"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 REPORT_PATH = OUTPUT_DIR / "one_patient_global_v2_report.txt"
 VALIDATION_FIGURE_PATH = OUTPUT_DIR / "one_patient_global_v2_validation.png"
 MODEL_PATH = OUTPUT_DIR / "one_patient_global_v2_model.npz"

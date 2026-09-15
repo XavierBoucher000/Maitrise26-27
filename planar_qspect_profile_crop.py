@@ -29,13 +29,14 @@ import pydicom
 from scipy.ndimage import gaussian_filter1d
 
 import attenuation_correction as ac
+import figure_layout
 import planar_processing
 import planar_qspect_crop
 import qspect_processing
 from plots import view_patient_images
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "crop_profile_matching"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 DETAIL_FIGURE_PATH = OUTPUT_DIR / "planar_qspect_longitudinal_profile_matches.png"
 SUMMARY_FIGURE_PATH = OUTPUT_DIR / "planar_qspect_profile_match_summary.png"
 BOUNDS_COMPARISON_PATH = OUTPUT_DIR / "crop_bounds_fixed_vs_profile.png"
@@ -50,6 +51,8 @@ VALUES_PATH = OUTPUT_DIR / "planar_qspect_profile_match_values.csv"
 REPORT_PATH = OUTPUT_DIR / "planar_qspect_profile_match_report.txt"
 
 MAX_SHIFT_CM = 20.0
+MAX_AUTO_SHIFT_CM = 40.0
+SEARCH_EXPANSION_STEP_CM = 5.0
 SMOOTHING_SIGMA_CM = 2.0
 EXCLUSION_RADIUS_PX = 5
 MIN_ACCEPTED_CORRELATION = 0.90
@@ -176,6 +179,52 @@ def search_profile_crop(
         "candidate_tops": candidate_tops,
         "scores": scores,
     }
+
+
+def search_profile_crop_with_boundary_expansion(
+    planar_profile: np.ndarray,
+    qspect_profile: np.ndarray,
+    initial_top: int,
+    initial_max_shift_px: int,
+    maximum_shift_px: int,
+    expansion_step_px: int,
+) -> Dict[str, Any]:
+    """Expand a boundary-limited search until its optimum becomes interior.
+
+    The usual mechanical prior is retained for the first search. Expansion is
+    only triggered when the best candidate lies exactly on a search boundary;
+    the normal match-quality checks are still applied afterward.
+    """
+    current_limit = max(0, int(initial_max_shift_px))
+    maximum_limit = max(current_limit, int(maximum_shift_px))
+    expansion_step = max(1, int(expansion_step_px))
+    result = search_profile_crop(
+        planar_profile,
+        qspect_profile,
+        initial_top=initial_top,
+        max_shift_px=current_limit,
+    )
+    attempts = 1
+    while bool(result["search_edge_hit"]) and current_limit < maximum_limit:
+        next_limit = min(maximum_limit, current_limit + expansion_step)
+        expanded = search_profile_crop(
+            planar_profile,
+            qspect_profile,
+            initial_top=initial_top,
+            max_shift_px=next_limit,
+        )
+        attempts += 1
+        current_limit = next_limit
+        result = expanded
+    result.update(
+        {
+            "initial_search_limit_px": int(initial_max_shift_px),
+            "effective_search_limit_px": int(current_limit),
+            "search_expanded": bool(current_limit > int(initial_max_shift_px)),
+            "search_attempts": int(attempts),
+        }
+    )
+    return result
 
 
 def add_match_quality_control(
@@ -378,11 +427,19 @@ def match_one_pair(
         max(0, initial_top), planar_profile.size - qspect_profile.size
     )
     max_shift_px = int(np.rint(float(max_shift_cm) * 10.0 / planar_spacing))
-    registration = search_profile_crop(
+    maximum_shift_px = int(
+        np.rint(float(MAX_AUTO_SHIFT_CM) * 10.0 / planar_spacing)
+    )
+    expansion_step_px = int(
+        np.rint(float(SEARCH_EXPANSION_STEP_CM) * 10.0 / planar_spacing)
+    )
+    registration = search_profile_crop_with_boundary_expansion(
         planar_profile,
         qspect_profile,
         initial_top=initial_top,
-        max_shift_px=max_shift_px,
+        initial_max_shift_px=max_shift_px,
+        maximum_shift_px=maximum_shift_px,
+        expansion_step_px=expansion_step_px,
     )
     registration.update(
         {
@@ -398,7 +455,10 @@ def match_one_pair(
             "qspect_spacing_mm": qspect_spacing,
             "crop_height_cm": qspect_profile.size * planar_spacing / 10.0,
             "shift_cm": registration["shift_px"] * planar_spacing / 10.0,
-            "search_limit_cm": max_shift_px * planar_spacing / 10.0,
+            "initial_search_limit_cm": max_shift_px * planar_spacing / 10.0,
+            "search_limit_cm": registration["effective_search_limit_px"]
+            * planar_spacing
+            / 10.0,
             "smoothing_sigma_cm": float(smoothing_sigma_cm),
         }
     )
@@ -1025,7 +1085,8 @@ def write_outputs(rows: Sequence[Dict[str, Any]]) -> Tuple[Path, Path]:
         "peak_width_correlation_loss", "minimum_accepted_correlation",
         "minimum_accepted_peak_margin", "maximum_accepted_peak_width_cm",
         "initial_position_source",
-        "planar_spacing_mm", "qspect_spacing_mm", "search_limit_cm",
+        "planar_spacing_mm", "qspect_spacing_mm", "initial_search_limit_cm",
+        "search_limit_cm", "search_expanded", "search_attempts",
         "smoothing_sigma_cm",
         "fixed_crop_top", "fixed_crop_bottom", "qspect_activity_mbq",
         "fixed_ctac_activity_mbq", "profile_ctac_activity_mbq",
@@ -1047,6 +1108,8 @@ def write_outputs(rows: Sequence[Dict[str, Any]]) -> Tuple[Path, Path]:
         "  TEW AP/PA geometric mean and Q/SPECT coronal mean projection;",
         "  horizontal sums; resampling to planar row spacing; log compression;",
         "  Gaussian smoothing; bounded normalized cross-correlation.",
+        "  If the optimum touches the initial +/-20 cm boundary, the search",
+        "  expands in 5 cm steps, up to +/-40 cm, before quality control.",
         "  The existing Day-0 crop is only a provisional initial position until",
         "  a marker-based machine calibration supplies the true fixed offset.",
         "  Acceptance requires correlation >= 0.90, peak margin >= 0.01,",
@@ -1057,15 +1120,16 @@ def write_outputs(rows: Sequence[Dict[str, Any]]) -> Tuple[Path, Path]:
         "",
         "A boundary maximum or a small peak margin indicates an unreliable match.",
         "",
-        " day | label | initial crop | applied crop | shift cm | corr | margin | width cm | accepted",
-        "---- | ----- | ------------ | ------------ | -------- | ---- | ------ | -------- | --------",
+        " day | label | initial crop | applied crop | shift cm | search cm | corr | margin | width cm | accepted",
+        "---- | ----- | ------------ | ------------ | -------- | --------- | ---- | ------ | -------- | --------",
     ]
     for row in rows:
         lines.append(
             f"{row['day_offset']:4.2f} | {row['label']:5s} | "
             f"{row['initial_top']:4d}:{row['initial_bottom']:<4d} | "
             f"{row['crop_top']:4d}:{row['crop_bottom']:<4d} | "
-            f"{row['shift_cm']:+8.2f} | {row['correlation']:.3f} | "
+            f"{row['shift_cm']:+8.2f} | {row['search_limit_cm']:9.2f} | "
+            f"{row['correlation']:.3f} | "
             f"{row['peak_margin']:.3f} | {row['peak_width_cm']:.2f} | "
             f"{row['match_accepted']}"
         )

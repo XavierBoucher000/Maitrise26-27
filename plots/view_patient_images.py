@@ -3,6 +3,9 @@ import re
 import sys
 from typing import Any, Dict, List
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pydicom
@@ -12,13 +15,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import dicom_loader
+import figure_layout
 import planar_processing
 import qspect_processing
 
 
 SELECTED_DAY = "Day0"
 PLANAR_DAY_LABELS = ("Day0", "Day1", "Day2", "Day3", "Day6")
-OUTPUT_DIR = Path("fig") / "imaging"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 TEST_MATCH_DIR = OUTPUT_DIR / "test_match"
 SEPARATE_MODALITIES_DIR = TEST_MATCH_DIR / "separate_modalities"
 OUTPUT_FILE = "planar_tew_corrected.png"
@@ -213,7 +217,7 @@ def save_figure(fig: plt.Figure, output_file: Path) -> Path:
     output_file = output_file.expanduser().resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_file, dpi=300, bbox_inches="tight", facecolor="white", pad_inches=0)
-    plt.show()
+    plt.close(fig)
     return output_file
 
 

@@ -69,13 +69,14 @@ import pydicom
 import attenuation_correction as ac
 import ct_attenuation_correction as ctac
 import dicom_loader
+import figure_layout
 import planar_processing
 import planar_qspect_profile_crop
 import qspect_processing
 from plots import view_patient_images
 
 
-FIG_ROOT = Path(__file__).resolve().parent / "fig" / "attenuation_window_model"
+FIG_ROOT = figure_layout.patient_cycle_dir(__file__)
 REPORT_PATH = FIG_ROOT / "one_patient_window_ridge_report.txt"
 VALIDATION_FIGURE_PATH = FIG_ROOT / "one_patient_window_ridge_validation.png"
 MAP_FIGURE_PATH = FIG_ROOT / "one_patient_window_ridge_last_day_map.png"

@@ -8,9 +8,10 @@ import numpy as np
 
 import attenuation_correction
 import ct_attenuation_correction as ctac
+import figure_layout
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "test"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 FIGURE_PATH = OUTPUT_DIR / "ctac_ap_pa_alignment_option_comparison.png"
 VALUES_PATH = OUTPUT_DIR / "ctac_ap_pa_alignment_option_values.csv"
 

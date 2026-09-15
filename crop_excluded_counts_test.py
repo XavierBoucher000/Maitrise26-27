@@ -8,10 +8,11 @@ import numpy as np
 
 import attenuation_correction
 import ct_attenuation_correction as ctac
+import figure_layout
 import planar_processing
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "crop_test"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 ALIGN_PA_TO_AP = True
 FIGURE_PATH = OUTPUT_DIR / "profile_crop_excluded_counts_over_time.png"
 VALUES_PATH = OUTPUT_DIR / "profile_crop_excluded_counts_values.csv"

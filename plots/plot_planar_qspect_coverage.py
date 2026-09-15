@@ -15,10 +15,11 @@ if str(PROJECT_ROOT) not in sys.path:
 import dicom_loader
 import planar_processing
 import qspect_processing
+import figure_layout
 
 
 SELECTED_DAY = "Day0"
-OUTPUT_DIR = Path("fig") / "coverage"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 
 
 def day_index(day_label: str) -> int:

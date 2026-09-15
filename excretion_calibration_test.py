@@ -23,11 +23,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+import figure_layout
 import sang_urine
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = PROJECT_DIR / "fig" / "excretion_calibration"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 FIGURE_PATH = OUTPUT_DIR / "urine_calibrated_planar_vs_old_qspect_excretion.png"
 VALUES_PATH = OUTPUT_DIR / "urine_calibration_values.csv"
 REPORT_PATH = OUTPUT_DIR / "urine_calibration_report.txt"

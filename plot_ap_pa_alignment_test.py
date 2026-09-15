@@ -7,10 +7,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import attenuation_correction
+import figure_layout
 import planar_processing
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "test"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 OUTPUT_PATH = OUTPUT_DIR / "ap_pa_horizontal_alignment_test.png"
 
 

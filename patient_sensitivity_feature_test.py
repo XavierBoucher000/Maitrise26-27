@@ -19,10 +19,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import attenuation_global_model_v2 as global_model
+import figure_layout
 import patient_effective_sensitivity as sensitivity
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "patient_sensitivity_features"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 VALUES_PATH = OUTPUT_DIR / "univariate_feature_results.csv"
 TIMEPOINT_VALUES_PATH = OUTPUT_DIR / "timepoint_feature_values.csv"
 REPORT_PATH = OUTPUT_DIR / "univariate_feature_report.txt"

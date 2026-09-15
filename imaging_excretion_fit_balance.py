@@ -19,12 +19,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
 
+import figure_layout
 import planar_excretion_fit_balance as pefb
 import sang_urine
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = PROJECT_DIR / "fig" / "imaging_excretion_fit_balance"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 PLANAR_DIR = OUTPUT_DIR / "Planar"
 QSPECT_DIR = OUTPUT_DIR / "QSPECT"
 COMPARISON_FIGURE = OUTPUT_DIR / "planar_qspect_recovered_injection.png"

@@ -30,12 +30,13 @@ import pandas as pd
 
 import attenuation_correction as ac
 import ct_attenuation_correction as ctac
+import figure_layout
 import planar_processing
 import qspect_processing
 from plots import view_patient_images
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "fig" / "ct_correction" / "simpleitk_resampling"
+OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 MAP_FIGURE_PATH = OUTPUT_DIR / "day0_ct_planar_resampling_comparison.png"
 TEMPORAL_FIGURE_PATH = OUTPUT_DIR / "ctac_resampling_comparison_over_time.png"
 VALUES_PATH = OUTPUT_DIR / "ctac_resampling_comparison_values.csv"

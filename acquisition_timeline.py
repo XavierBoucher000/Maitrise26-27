@@ -24,12 +24,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pydicom
 
+import figure_layout
 import planar_processing
 import qspect_processing
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_DIR = PROJECT_DIR / "fig" / "acquisition_timeline"
+DEFAULT_OUTPUT_DIR = figure_layout.patient_cycle_dir(__file__)
 LU177_PHYSICAL_HALF_LIFE_H = 159.5
 
 

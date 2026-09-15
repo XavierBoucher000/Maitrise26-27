@@ -2,16 +2,22 @@ from pathlib import Path
 import csv
 import math
 import random
+import sys
 import matplotlib
 
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import figure_layout
+
+
 DATA_PATH = ROOT / "Data" / "Lu177_approx_spectrum_from_image.csv"
-OUT_DIR = ROOT / "fig" / "spectrum"
+OUT_DIR = figure_layout.shared_dir(__file__)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 NOISE_SEED = 177
 NOISE_LEVEL = 0.045

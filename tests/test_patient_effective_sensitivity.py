@@ -64,3 +64,30 @@ def test_stability_metrics_uses_sample_sd():
     assert metrics["mean_cps_per_mbq"] == pytest.approx(3.0)
     assert metrics["sd_cps_per_mbq"] == pytest.approx(np.sqrt(2.0))
     assert metrics["slope_cps_per_mbq_per_day"] == pytest.approx(2.0)
+
+
+def test_time_pairing_can_skip_an_unmatched_planar_for_partial_external_test(monkeypatch):
+    planar_times = {
+        "day0": datetime(2026, 6, 16, 12),
+        "day1": datetime(2026, 6, 17, 9),
+        "day2": datetime(2026, 6, 18, 8),
+    }
+    scans = [{"scan_name": name} for name in planar_times]
+    qspect = [
+        {"label": "Day1", "acquisition_datetime": datetime(2026, 6, 17, 10)},
+        {"label": "Day2", "acquisition_datetime": datetime(2026, 6, 18, 9)},
+    ]
+    monkeypatch.setattr(
+        pes.dicom_loader,
+        "scan_datetime",
+        lambda scan: planar_times[scan["scan_name"]],
+    )
+
+    pairs = pes._pair_acquisitions_by_time(
+        scans, qspect, max_time_difference_h=6.0, allow_unpaired_planar=True
+    )
+
+    assert [(scan["scan_name"], item["label"]) for scan, item in pairs] == [
+        ("day1", "Day1"),
+        ("day2", "Day2"),
+    ]
