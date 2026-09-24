@@ -37,8 +37,8 @@ import qspect_processing
 
 PROJECT_DIR = Path(__file__).resolve().parent
 SCRIPT_NAME = Path(__file__).stem
-DEFAULT_PATIENT_ID = "patient1"
-DEFAULT_CYCLE_ID = "cycle1"
+DEFAULT_PATIENT_ID = "p11"
+DEFAULT_CYCLE_ID = "2026-05__Studies"
 LOCKED_FEATURE = spectral_model.BROAD_FEATURE_NAME
 ELIGIBLE_FEATURES = (
     *spectral_model.ALL_FEATURE_NAMES,
@@ -48,19 +48,26 @@ CROP_OFFSETS_PIXELS = (-10, -5, 0, 5, 10)
 
 
 CYCLE_DATASETS = {
-    ("patient1", "cycle1"): {
-        "patient_label": "Patient 1",
-        "figure_patient": "patient 1",
+    ("p11", "2026-05__Studies"): {
+        "patient_label": "P11 — cycle de mai",
+        "figure_patient": "p11",
         "figure_cycle": "2026-05__Studies",
-        "planar_dir": PROJECT_DIR / "Data/patient 1/2026-05__Studies_WBP",
-        "qspect_dir": PROJECT_DIR / "Data/patient 1/2026-05__Studies",
+        "planar_dir": PROJECT_DIR / "Data/p11/2026-05__Studies_WBP",
+        "qspect_dir": PROJECT_DIR / "Data/p11/2026-05__Studies",
     },
-    ("patient2", "cycle1"): {
-        "patient_label": "Patient 2",
-        "figure_patient": "patient 2",
+    ("p11", "2026-07__Studies"): {
+        "patient_label": "P11 — cycle de juillet",
+        "figure_patient": "p11",
+        "figure_cycle": "2026-07__Studies",
+        "planar_dir": PROJECT_DIR / "Data/p11/2026-07__Studies_WBP",
+        "qspect_dir": PROJECT_DIR / "Data/p11/2026-07__Studies",
+    },
+    ("p8", "2026-06__Studies"): {
+        "patient_label": "P8 — cycle de juin",
+        "figure_patient": "p8",
         "figure_cycle": "2026-06__Studies",
-        "planar_dir": PROJECT_DIR / "Data/patient 2/2026-06__Studies_WBP",
-        "qspect_dir": PROJECT_DIR / "Data/patient 2/2026-06__Studies",
+        "planar_dir": PROJECT_DIR / "Data/p8/2026-06__Studies_WBP",
+        "qspect_dir": PROJECT_DIR / "Data/p8/2026-06__Studies",
     },
 }
 
@@ -589,8 +596,8 @@ def run_locked_external_validation(
             textcoords="offset points", ha="center", fontweight="bold",
         )
     ax.set_ylabel("Activité prédite / activité Q/SPECT")
-    ax.set_xlabel("Timepoint complet du patient 2")
-    ax.set_title("Test externe partiel du modèle entraîné sur le patient 1")
+    ax.set_xlabel(f"Timepoint complet — {evaluation_label}")
+    ax.set_title(f"Transfert du modèle {training_label} vers {evaluation_label}")
     ax.grid(axis="y", linestyle="--", alpha=0.28)
     ax.legend(frameon=False)
     ax.spines[["top", "right"]].set_visible(False)
@@ -628,7 +635,7 @@ def run_locked_external_validation(
     )
     ax.set_xlabel("Rapport fenêtre large de basse énergie / photopeak")
     ax.set_ylabel("Sensibilité effective avec TEW (cps/MBq)")
-    ax.set_title("Transfert sans réajustement vers le patient 2")
+    ax.set_title(f"Transfert sans réajustement vers {evaluation_label}")
     ax.grid(True, linestyle="--", alpha=0.28)
     ax.legend(frameon=False)
     ax.spines[["top", "right"]].set_visible(False)
@@ -639,8 +646,8 @@ def run_locked_external_validation(
     plt.close(fig)
 
     lines = [
-        "Locked external validation — partial patient 2 dataset",
-        "======================================================",
+        f"Locked external validation — {evaluation_label}",
+        "=" * (29 + len(evaluation_label)),
         "",
         f"Training: {training_label}, n={len(training['labels'])}",
         f"Evaluation: {evaluation_label}, n={len(evaluation['labels'])}",
@@ -662,7 +669,7 @@ def run_locked_external_validation(
             "",
             "Interpretation:",
             "  This is a partial external test on complete timepoints only.",
-            "  It does not replace the planned three-timepoint patient-2 validation.",
+            "  It does not replace validation on a complete independent dataset.",
         ]
     )
     (output_dir / "v2_external_validation_report.txt").write_text(
@@ -1040,7 +1047,7 @@ def plot_presentation_outputs(
         ax.annotate(label, (ratio, sensitivity_value), xytext=(7, 5), textcoords="offset points")
     ax.set_xlabel("Rapport fenêtre large de basse énergie / photopeak")
     ax.set_ylabel("Sensibilité effective avec TEW (cps/MBq)")
-    ax.set_title("Le ratio spectral suit la variation de sensibilité effective")
+    ax.set_title("Relation entre le ratio spectral et la sensibilité effective")
     ax.text(
         0.03,
         0.06,
@@ -1048,15 +1055,6 @@ def plot_presentation_outputs(
         transform=ax.transAxes,
         fontsize=12,
         bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "edgecolor": "0.8"},
-    )
-    ax.text(
-        0.5,
-        -0.18,
-        "Relation descriptive; la performance est évaluée séparément par validation LOO",
-        transform=ax.transAxes,
-        ha="center",
-        va="top",
-        color="0.35",
     )
     ax.grid(True, linestyle="--", alpha=0.28)
     ax.legend(frameon=False)
@@ -1203,7 +1201,7 @@ def main() -> None:
     parser.add_argument(
         "--external-validation",
         action="store_true",
-        help="train on patient1/cycle1 and test only complete target timepoints",
+        help="train on p11/2026-05 and test only complete target timepoints",
     )
     args = parser.parse_args()
     configured = CYCLE_DATASETS.get((args.patient_id, args.cycle_id))
@@ -1219,7 +1217,7 @@ def main() -> None:
         configured["patient_label"] if configured else args.patient_id
     )
     if args.external_validation:
-        training = CYCLE_DATASETS[("patient1", "cycle1")]
+        training = CYCLE_DATASETS[("p11", "2026-05__Studies")]
         run_locked_external_validation(
             training["planar_dir"], training["qspect_dir"],
             planar_dir, qspect_dir, output_dir,

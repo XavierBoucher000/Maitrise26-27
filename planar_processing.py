@@ -503,7 +503,7 @@ def default_planar_study_dir() -> Path:
     return (
         Path(__file__).resolve().parent
         / "Data"
-        / "patient 1"
+        / "p11"
         / "2026-05__Studies_WBP"
     )
 
@@ -512,7 +512,7 @@ def default_rapid_scan_dir() -> Path:
     return (
         Path(__file__).resolve().parent
         / "Data"
-        / "patient 1"
+        / "p11"
         / "2026-05__Studies_WBP"
         / "DOE^JOHN_ANON64926_NM_2026-05-21_082240_MN.LU177.POST.TRAITEMENT-EN_WB.RAPIDE_n8__00000"
     )

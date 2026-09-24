@@ -190,7 +190,7 @@ def plot_catphan_t2_hu_to_mu_calibration(
     hu_curve = np.linspace(hu_nodes[0], hu_nodes[-1], 3000)
     mu_curve = ctac.catphan_t2_hu_to_mu_2084_cm_inv(hu_curve)
 
-    fig, ax = plt.subplots(figsize=(9.2, 5.8), facecolor="white")
+    fig, ax = plt.subplots(figsize=(10.5, 6.2), facecolor="white")
     ax.plot(
         hu_curve,
         mu_curve,
@@ -228,29 +228,18 @@ def plot_catphan_t2_hu_to_mu_calibration(
             xytext=annotation_offsets[material],
             textcoords="offset points",
             ha="right" if material == "polystyrene" else "left",
-            fontsize=8,
+            fontsize=12,
             color="#444444",
         )
-    ax.set_title("Courbe provisoire T2 : HU vers μ à 208,4 keV")
-    ax.set_xlabel("Unité Hounsfield (HU)")
-    ax.set_ylabel(r"Coefficient linéaire μ$_{208,4}$ (cm$^{-1}$)")
+    ax.set_xlabel("Unité Hounsfield (HU)", fontsize=16)
+    ax.set_ylabel(r"Coefficient linéaire μ$_{208,4}$ (cm$^{-1}$)", fontsize=16)
+    ax.tick_params(axis="both", labelsize=14)
     ax.set_xlim(hu_nodes[0] - 70.0, hu_nodes[-1] + 70.0)
     ax.set_ylim(0.0, float(mu_nodes.max()) * 1.13)
     ax.grid(True, linestyle="--", alpha=0.3)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.legend(frameon=False, loc="upper left")
-    ax.text(
-        0.98,
-        0.05,
-        "HU mesurés : T2, 110 kVp, B41s, 8 mm\n"
-        "Patient : T2, 110 kVp, B08s, 5 mm — méthode exploratoire",
-        transform=ax.transAxes,
-        ha="right",
-        va="bottom",
-        fontsize=8.5,
-        color="#555555",
-    )
+    ax.legend(frameon=False, loc="upper left", fontsize=14)
     _save_png_svg(fig, output_path)
     return output_path
 

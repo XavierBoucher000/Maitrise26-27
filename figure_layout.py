@@ -1,7 +1,7 @@
 """Canonical output paths for all generated project figures and reports.
 
 Patient-specific output:
-    fig/<script_name>/patient X/<source cycle folder>/<artifact>
+    fig/<script_name>/pX/<source cycle folder>/<artifact>
 
 System-, isotope-, or calibration-level output:
     fig/<script_name>/shared/<artifact>
@@ -20,15 +20,17 @@ from typing import Union
 
 PROJECT_DIR = Path(__file__).resolve().parent
 FIG_ROOT = PROJECT_DIR / "fig"
-DEFAULT_PATIENT = "patient 1"
+DEFAULT_PATIENT = "p11"
 DEFAULT_CYCLE = "2026-05__Studies"
 
 
 def _patient_folder(value: str) -> str:
-    match = re.fullmatch(r"patient[\s_-]*(\d+)", str(value).strip(), re.IGNORECASE)
+    match = re.fullmatch(
+        r"(?:patient[\s_-]*|p)(\d+)", str(value).strip(), re.IGNORECASE
+    )
     if match is None:
-        raise ValueError(f"patient must look like 'patient 1', got {value!r}")
-    return f"patient {int(match.group(1))}"
+        raise ValueError(f"patient must look like 'p11', got {value!r}")
+    return f"p{int(match.group(1))}"
 
 
 def _cycle_folder(value: str) -> str:

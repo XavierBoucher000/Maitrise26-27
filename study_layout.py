@@ -11,7 +11,7 @@ import pydicom
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_DIR / "Data"
-PATIENT_RE = re.compile(r"^patient\s+\d+$", re.IGNORECASE)
+PATIENT_RE = re.compile(r"^p\d+$", re.IGNORECASE)
 CYCLE_RE = re.compile(r"^\d{4}-\d{2}__Studies(?:-\d+)?$")
 
 

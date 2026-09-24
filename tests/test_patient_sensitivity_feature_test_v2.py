@@ -6,12 +6,12 @@ import patient_sensitivity_feature_test_v2 as feature_test
 
 
 def test_organized_output_dir_uses_script_patient_cycle_hierarchy():
-    output = feature_test.organized_output_dir("patient2", "cycle1")
+    output = feature_test.organized_output_dir("p8", "2026-06__Studies")
     assert output == (
         feature_test.PROJECT_DIR
         / "fig"
         / "patient_sensitivity_feature_test_v2"
-        / "patient 2"
+        / "p8"
         / "2026-06__Studies"
     )
 

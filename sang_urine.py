@@ -29,7 +29,7 @@ import qspect_processing
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_SOURCE_CSV = (
-    PROJECT_DIR / "Data" / "patient 1" / "P-011csv.csv"
+    PROJECT_DIR / "Data" / "p11" / "P-011csv.csv"
 )
 DEFAULT_IMAGING_CSV = (
     figure_layout.patient_cycle_dir("compare_crop_methods.py")

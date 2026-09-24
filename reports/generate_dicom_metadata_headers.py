@@ -13,10 +13,12 @@ if str(ROOT) not in sys.path:
 
 DATA_DIR = ROOT / "Data"
 FIG_ROOT = ROOT / "fig" / "metadonné"
+CT_GUIDE_PATH = FIG_ROOT / "shared" / "ct_series_guide.txt"
 
 # Un dossier de cycle "QSPECT" ressemble a "2026-06__Studies" (jamais "_WBP").
 # Le dossier planar correspondant est le meme nom + "_WBP".
 CYCLE_DIR_RE = re.compile(r"^.+__Studies(-\d+)?$")
+PATIENT_DIR_RE = re.compile(r"^p\d+$", re.IGNORECASE)
 
 
 class Cycle(NamedTuple):
@@ -28,7 +30,10 @@ class Cycle(NamedTuple):
 def patient_dirs(data_dir: Path) -> List[Path]:
     if not data_dir.exists():
         return []
-    return sorted(p for p in data_dir.iterdir() if p.is_dir())
+    return sorted(
+        p for p in data_dir.iterdir()
+        if p.is_dir() and PATIENT_DIR_RE.fullmatch(p.name) is not None
+    )
 
 
 def cycles_for_patient(patient_dir: Path) -> List[Cycle]:
@@ -165,7 +170,73 @@ def process_cycle(patient_name: str, cycle: Cycle) -> None:
     print(f"Saved: {index_path}")
 
 
+def write_ct_series_guide(output_path: Path = CT_GUIDE_PATH) -> Path:
+    """Write a durable summary of the CT-family objects used in this project."""
+    lines = [
+        "Guide des séries CT du projet Lu-177",
+        "====================================",
+        "",
+        "1. Topogram / localizer",
+        "  Image de repérage utilisée pour planifier l'étendue du CT.",
+        "  Ce n'est ni un volume anatomique 3D ni une carte d'atténuation.",
+        "  Elle n'est pas utilisée dans le pipeline de correction planaire.",
+        "",
+        "2. CT",
+        "  Reconstruction CT anatomique originale, généralement en matrice 512 x 512.",
+        "  Les pixels sont convertis en HU avec RescaleSlope et RescaleIntercept.",
+        "  Elle conserve la meilleure résolution anatomique, mais n'est pas directement",
+        "  dans la matrice du Q/SPECT.",
+        "",
+        "3. ACCT",
+        "  Reconstruction CT préparée par Siemens pour la correction d'atténuation.",
+        "  Elle demeure souvent dans une grille CT, par exemple 224 coupes de 512 x 512.",
+        "  Elle peut servir de repli lorsque l'objet transformé est absent, mais nécessite",
+        "  alors un rééchantillonnage explicite vers la géométrie NM.",
+        "",
+        "4. ACCT [Transformed Object]",
+        "  Objet CT/AC recalé et rééchantillonné dans la grille NM/Q/SPECT.",
+        "  Il partage normalement le FrameOfReferenceUID, la matrice 128 x 128,",
+        "  l'espacement d'environ 4,7952 mm et le nombre de coupes du Q/SPECT.",
+        "  C'est l'objet prioritaire du pipeline, car sa géométrie correspond déjà au",
+        "  volume Q/SPECT utilisé comme référence.",
+        "  Dans les exports examinés, RescaleSlope=1 et RescaleIntercept=-1024 donnent",
+        "  des valeurs de type HU. Il ne faut donc pas présumer que les pixels exportés",
+        "  sont directement des coefficients mu_208 en cm^-1 sans validation additionnelle.",
+        "",
+        "5. ACCT [Resampled]",
+        "  Objet intermédiaire rééchantillonné rencontré dans certains examens.",
+        "  Sa couverture peut différer de celle du Q/SPECT, par exemple 81 coupes.",
+        "  Il n'est pas choisi lorsque ACCT [Transformed Object] est disponible.",
+        "",
+        "6. Patient Protocol",
+        "  Objet de protocole ou de planification, pas un volume CT quantitatif destiné",
+        "  à la correction d'atténuation.",
+        "",
+        "Ordre de sélection du pipeline",
+        "  1) ACCT [Transformed Object]",
+        "  2) ACCT original comme repli",
+        "  3) autre CT compatible seulement après vérification de la géométrie",
+        "",
+        "Disponibilité vérifiée le 21 septembre 2026",
+        "  P11, cycle de mai : objet transformé présent à J0, J1, J3 et J6;",
+        "    absent à J2, où ACCT et CT sont présents.",
+        "  P11, cycle de juillet : CT, ACCT et objet transformé présents aux trois jours.",
+        "  P8, cycle de juin : J0 possède le CT brut, mais ACCT et objet transformé",
+        "    sont absents; J1 et J2 possèdent les objets nécessaires.",
+        "  Le Q/SPECT J0 de P8 est aussi incomplet : 53 fichiers sur 232.",
+        "",
+        "Portée",
+        "  Le CT sert au développement, à la compréhension de l'atténuation et à la",
+        "  validation. Il ne doit pas être une entrée du modèle planaire final sans CT.",
+    ]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Saved: {output_path}")
+    return output_path
+
+
 def main() -> None:
+    write_ct_series_guide()
     for patient_dir in patient_dirs(DATA_DIR):
         patient_name = patient_dir.name
         cycles = cycles_for_patient(patient_dir)

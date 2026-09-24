@@ -22,7 +22,7 @@ def test_selected_analyses_rejects_unknown_name():
 
 def test_dry_run_recognizes_an_existing_successful_run(monkeypatch, tmp_path):
     dataset = study_layout.CycleDataset(
-        "patient 1", "2026-05__Studies", tmp_path / "q", tmp_path / "p"
+        "p11", "2026-05__Studies", tmp_path / "q", tmp_path / "p"
     )
     monkeypatch.setattr(
         runner.study_layout,

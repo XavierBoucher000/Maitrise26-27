@@ -379,7 +379,7 @@ def default_qspect_dir() -> Path:
     data_path = (
         base
         / "Data"
-        / "patient 1"
+        / "p11"
         / "2026-05__Studies"
     )
     if data_path.exists():
