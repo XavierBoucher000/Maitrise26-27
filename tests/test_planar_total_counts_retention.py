@@ -66,10 +66,25 @@ def test_total_gm_counts_by_window_is_pixelwise_and_aligns_pa():
     )
 
 
+def test_total_global_gm_counts_by_window_combines_detector_totals():
+    images = []
+    for window in analysis.EXPECTED_WINDOWS:
+        images.append(_image(window, "AP", 5.0, [[1.0, 4.0]]))
+        images.append(_image(window, "PA", 25.0, [[9.0, 16.0]]))
+    counts = analysis.total_global_gm_counts_by_window({"images": images})
+    assert counts == {
+        window: pytest.approx(np.sqrt(5.0 * 25.0))
+        for window in analysis.EXPECTED_WINDOWS
+    }
+
+
 def test_total_counts_by_window_dispatches_modes_and_rejects_unknown():
     scan = _complete_scan()
     assert analysis.total_counts_by_window(scan, "AP_PA") == (
         analysis.total_ap_pa_counts_by_window(scan)
+    )
+    assert analysis.total_counts_by_window(scan, "GM_globale") == (
+        analysis.total_global_gm_counts_by_window(scan)
     )
     with pytest.raises(ValueError, match="Unknown combination"):
         analysis.total_counts_by_window(scan, "invalid")
@@ -116,6 +131,7 @@ def test_timepoint_labels_follow_elapsed_days():
     [
         ("Data/p11/P-011csv.csv", 7200.0, 1048.87),
         ("Data/p8/P-008.csv", 2030.0, 140.10),
+        ("Data/p17/P-017.xlsx", 7300.0, 1704.1061281788977),
     ],
 )
 def test_generic_urine_loader_supports_both_patient_layouts(
@@ -136,6 +152,7 @@ def test_every_configured_cycle_has_a_planar_directory():
         ("p11", "2026-05__Studies"),
         ("p11", "2026-07__Studies"),
         ("p8", "2026-06__Studies"),
+        ("p17", "2026-09__Studies"),
     }
     for configured in analysis.DATASETS.values():
         assert Path(configured["planar_dir"]).is_dir()

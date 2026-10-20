@@ -7,7 +7,9 @@ modes:
 
 * ``AP_PA``: direct sum of the AP and PA image counts;
 * ``GM``: pixelwise geometric mean ``sqrt(AP * PA_aligned)``, followed by the
-  sum of the GM image.
+  sum of the GM image;
+* ``GM_globale``: geometric mean of the two detector totals,
+  ``sqrt(sum(AP) * sum(PA))``.
 
 The same calculation is then reported for:
 
@@ -29,9 +31,11 @@ import argparse
 import csv
 import math
 import re
-from datetime import datetime
+import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from xml.etree import ElementTree
 
 import matplotlib
 
@@ -47,11 +51,16 @@ import sang_urine
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_PLANAR_DIR = PROJECT_DIR / "Data" / "p11" / "2026-05__Studies_WBP"
+DEFAULT_PLANAR_DIR = PROJECT_DIR / "Data" / "p11" / "2026-05__Studies"
 DEFAULT_URINE_CSV = PROJECT_DIR / "Data" / "p11" / "P-011csv.csv"
 COMBINATION_AP_PA = "AP_PA"
 COMBINATION_GM = "GM"
-COMBINATIONS = (COMBINATION_AP_PA, COMBINATION_GM)
+COMBINATION_GM_GLOBAL = "GM_globale"
+COMBINATIONS = (
+    COMBINATION_AP_PA,
+    COMBINATION_GM,
+    COMBINATION_GM_GLOBAL,
+)
 DEFAULT_COMBINATION = COMBINATION_AP_PA
 
 DEFAULT_OUTPUT_DIR = (
@@ -63,20 +72,26 @@ DATASETS: Dict[Tuple[str, str], Dict[str, Any]] = {
     ("p11", "2026-05__Studies"): {
         "patient_label": "P11",
         "cycle_label": "cycle de mai 2026",
-        "planar_dir": PROJECT_DIR / "Data/p11/2026-05__Studies_WBP",
+        "planar_dir": PROJECT_DIR / "Data/p11/2026-05__Studies",
         "urine_csv": PROJECT_DIR / "Data/p11/P-011csv.csv",
     },
     ("p11", "2026-07__Studies"): {
         "patient_label": "P11",
         "cycle_label": "cycle de juillet 2026",
-        "planar_dir": PROJECT_DIR / "Data/p11/2026-07__Studies_WBP",
+        "planar_dir": PROJECT_DIR / "Data/p11/2026-07__Studies",
         "urine_csv": None,
     },
     ("p8", "2026-06__Studies"): {
         "patient_label": "P8",
         "cycle_label": "cycle de juin 2026",
-        "planar_dir": PROJECT_DIR / "Data/p8/2026-06__Studies_WBP",
+        "planar_dir": PROJECT_DIR / "Data/p8/2026-06__Studies",
         "urine_csv": PROJECT_DIR / "Data/p8/P-008.csv",
+    },
+    ("p17", "2026-09__Studies"): {
+        "patient_label": "P17",
+        "cycle_label": "cycle de septembre 2026",
+        "planar_dir": PROJECT_DIR / "Data/p17/2026-09__Studies",
+        "urine_csv": PROJECT_DIR / "Data/p17/P-017.xlsx",
     },
 }
 
@@ -114,8 +129,70 @@ def _urine_hour_key(text: str) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _xlsx_rows(path: Path) -> List[List[str]]:
+    """Read cached values from the first worksheet without an Excel dependency."""
+    namespace = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(path) as archive:
+        shared: List[str] = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            shared = [
+                "".join(node.text or "" for node in item.findall(".//x:t", namespace))
+                for item in root.findall("x:si", namespace)
+            ]
+        sheet = ElementTree.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+
+    sparse: Dict[int, Dict[int, str]] = {}
+    maximum_column = 0
+    for row in sheet.findall(".//x:sheetData/x:row", namespace):
+        row_index = int(row.attrib["r"]) - 1
+        values: Dict[int, str] = {}
+        for cell in row.findall("x:c", namespace):
+            reference = str(cell.attrib["r"])
+            letters = re.match(r"[A-Z]+", reference)
+            if letters is None:
+                continue
+            column_index = 0
+            for character in letters.group(0):
+                column_index = column_index * 26 + ord(character) - ord("A") + 1
+            column_index -= 1
+            value_node = cell.find("x:v", namespace)
+            value = "" if value_node is None else str(value_node.text or "")
+            if cell.attrib.get("t") == "s" and value:
+                value = shared[int(value)]
+            elif cell.attrib.get("t") == "inlineStr":
+                value = "".join(
+                    node.text or "" for node in cell.findall(".//x:t", namespace)
+                )
+            values[column_index] = value
+            maximum_column = max(maximum_column, column_index)
+        sparse[row_index] = values
+
+    maximum_row = max(sparse, default=-1)
+    return [
+        [sparse.get(row, {}).get(column, "") for column in range(maximum_column + 1)]
+        for row in range(maximum_row + 1)
+    ]
+
+
+def _table_rows(path: Path) -> List[List[str]]:
+    if path.suffix.lower() == ".xlsx":
+        return _xlsx_rows(path)
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        return list(csv.reader(handle))
+
+
+def _spreadsheet_datetime(value: str) -> datetime:
+    text = str(value).strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M")
+    except ValueError:
+        serial = float(text)
+        return datetime(1899, 12, 30) + timedelta(days=serial)
+
+
 def load_urine_retention_csv(csv_path: Path) -> Dict[str, Any]:
-    """Load the common urine/diaper balance fields from P11 or P8 CSV files.
+    """Load common urine/diaper fields from a CSV or XLSX source table.
 
     The two spreadsheets contain the same summary table shifted by one column.
     This parser anchors columns to the ``Urine +Diapers`` header instead of
@@ -123,8 +200,7 @@ def load_urine_retention_csv(csv_path: Path) -> Dict[str, Any]:
     are intentionally ignored for whole-body retention.
     """
     csv_path = Path(csv_path)
-    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.reader(handle))
+    rows = _table_rows(csv_path)
 
     injected_activity_mbq: Optional[float] = None
     half_life_h: Optional[float] = None
@@ -141,9 +217,7 @@ def load_urine_retention_csv(csv_path: Path) -> Dict[str, Any]:
             elif "177lu half-life" in key:
                 half_life_h = _csv_number(following)
             elif key == "time of injection":
-                injection_datetime = datetime.strptime(
-                    following, "%Y-%m-%d %H:%M"
-                )
+                injection_datetime = _spreadsheet_datetime(following)
             elif "urine +diapers" in key and "sampling time" in key:
                 summary_header_row = row_index
                 total_excreted_column = column
@@ -203,7 +277,7 @@ def load_urine_retention_csv(csv_path: Path) -> Dict[str, Any]:
                 ),
                 "total_excreted_activity_mbq": float(total_mbq),
                 "sampling_datetime": (
-                    datetime.strptime(sampling_text, "%Y-%m-%d %H:%M")
+                    _spreadsheet_datetime(sampling_text)
                     if sampling_text
                     else None
                 ),
@@ -320,6 +394,51 @@ def total_gm_counts_by_window(
     return counts
 
 
+def total_global_gm_counts_by_window(
+    scan: Mapping[str, Any],
+) -> Dict[str, float]:
+    """Return ``sqrt(sum(AP) * sum(PA))`` for every energy window.
+
+    Unlike the pixelwise GM, this definition combines the two whole-image
+    detector totals.  It is invariant to a left/right flip of the PA image.
+    """
+    grouped: Dict[str, Dict[str, List[float]]] = {
+        window: {"AP": [], "PA": []} for window in EXPECTED_WINDOWS
+    }
+    for image in scan.get("images", []):
+        window = planar_processing.normalize_energy_label(
+            image.get("energy_window") or image.get("energy_window_name")
+        )
+        view = str(image.get("view", "")).upper()
+        if window not in grouped or view not in {"AP", "PA"}:
+            continue
+        pixel_sum = image.get("pixel_sum")
+        if pixel_sum is None:
+            pixels = image.get("image")
+            if pixels is None:
+                raise ValueError(f"Missing pixels for {window} {view}")
+            pixel_sum = np.asarray(pixels, dtype=np.float64).sum()
+        grouped[window][view].append(_finite_float(pixel_sum))
+
+    invalid = [
+        f"{window} {view}"
+        for window in EXPECTED_WINDOWS
+        for view in ("AP", "PA")
+        if len(grouped[window][view]) != 1
+    ]
+    if invalid:
+        raise ValueError(
+            "The primary planar acquisition must contain exactly one frame for "
+            "each AP/PA energy window; invalid entries: " + ", ".join(invalid)
+        )
+    return {
+        window: float(
+            np.sqrt(grouped[window]["AP"][0] * grouped[window]["PA"][0])
+        )
+        for window in EXPECTED_WINDOWS
+    }
+
+
 def total_counts_by_window(
     scan: Mapping[str, Any],
     combination: str = DEFAULT_COMBINATION,
@@ -332,6 +451,8 @@ def total_counts_by_window(
         return total_gm_counts_by_window(
             scan, align_pa_to_ap=align_pa_to_ap
         )
+    if combination == COMBINATION_GM_GLOBAL:
+        return total_global_gm_counts_by_window(scan)
     raise ValueError(
         f"Unknown combination {combination!r}; expected one of {COMBINATIONS}"
     )
@@ -346,6 +467,8 @@ def _combination_description(
     if combination == COMBINATION_GM:
         orientation = "PA retourné vers AP" if align_pa_to_ap else "PA non retourné"
         return f"moyenne géométrique pixel par pixel ({orientation})"
+    if combination == COMBINATION_GM_GLOBAL:
+        return "moyenne géométrique globale sqrt(somme AP × somme PA)"
     raise ValueError(f"Unknown combination {combination!r}")
 
 
@@ -355,16 +478,20 @@ def _combination_title(result: Mapping[str, Any]) -> str:
         return "AP + PA"
     if combination == COMBINATION_GM:
         return "GM pixel par pixel (PA aligné)"
+    if combination == COMBINATION_GM_GLOBAL:
+        return "GM globale"
     raise ValueError(f"Unknown combination {combination!r}")
 
 
 def _counts_axis_label(result: Mapping[str, Any]) -> str:
     combination = result.get("view_combination", DEFAULT_COMBINATION)
-    return (
-        "Full-image AP+PA counts (millions)"
-        if combination == COMBINATION_AP_PA
-        else "Full-image geometric-mean counts (millions)"
-    )
+    if combination == COMBINATION_AP_PA:
+        return "Full-image AP+PA counts (millions)"
+    if combination == COMBINATION_GM:
+        return "Pixelwise geometric-mean counts (millions)"
+    if combination == COMBINATION_GM_GLOBAL:
+        return "Global geometric-mean counts (millions)"
+    raise ValueError(f"Unknown combination {combination!r}")
 
 
 def _timepoint_labels(datetimes: Sequence[datetime]) -> List[str]:
@@ -1110,7 +1237,7 @@ def run_analysis(
 def run_all_datasets(
     comparison_timepoints: int = 3,
 ) -> Dict[Tuple[str, str, str], Dict[str, Any]]:
-    """Generate AP_PA and GM subfolders for every configured patient/cycle."""
+    """Generate AP_PA, pixelwise GM and global GM for every patient/cycle."""
     results: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
     for (patient_id, cycle_id), configured in DATASETS.items():
         cycle_output_dir = figure_layout.patient_cycle_dir(
@@ -1135,7 +1262,9 @@ def run_all_datasets(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--patient-id", choices=("p11", "p8"))
+    parser.add_argument(
+        "--patient-id", choices=tuple(sorted({patient for patient, _ in DATASETS}))
+    )
     parser.add_argument("--cycle-id")
     parser.add_argument("--planar-dir", type=Path)
     parser.add_argument("--urine-csv", type=Path)

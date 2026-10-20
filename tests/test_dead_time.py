@@ -14,6 +14,7 @@ from dead_time import (
     correct_dead_time,
     correct_dead_time_dataframe,
 )
+from planar_processing import average_wide_spectrum_rate
 
 
 def test_zero_wide_rate_gives_dtcf_one():
@@ -134,3 +135,31 @@ def test_dataframe_correction_multiple_timepoints():
 def test_dataframe_missing_columns_raise():
     with pytest.raises(ValueError, match="Missing required columns"):
         correct_dead_time_dataframe(pd.DataFrame({"timepoint": ["D0"]}))
+
+
+def test_planar_rwo_is_arithmetic_mean_of_raw_detector_rates():
+    images = []
+    energies = [
+        "Low Energy Scatter",
+        "Lower Scatter",
+        "Photopeak",
+        "Upper Scatter",
+    ]
+    for view, total_counts in (("AP", 1000.0), ("PA", 600.0)):
+        for energy in energies:
+            images.append(
+                {
+                    "view": view,
+                    "energy_window": energy,
+                    "pixel_sum": total_counts / len(energies),
+                }
+            )
+
+    average_rate, counts_by_view, rates_by_view = average_wide_spectrum_rate(
+        images,
+        duration_seconds=10.0,
+    )
+
+    assert counts_by_view == {"AP": pytest.approx(1000.0), "PA": pytest.approx(600.0)}
+    assert rates_by_view == {"AP": pytest.approx(100.0), "PA": pytest.approx(60.0)}
+    assert average_rate == pytest.approx(80.0)

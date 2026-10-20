@@ -19,3 +19,13 @@ def test_discover_cycles_pairs_qspect_and_wbp_folders(tmp_path):
             patient / "2026-06__Studies_WBP",
         )
     ]
+
+
+def test_discover_cycles_uses_cycle_folder_when_wbp_is_not_separate(tmp_path):
+    patient = tmp_path / "p17"
+    cycle = patient / "2026-09__Studies"
+    cycle.mkdir(parents=True)
+
+    cycles = study_layout.discover_cycles(tmp_path)
+
+    assert cycles == [study_layout.CycleDataset("p17", cycle.name, cycle, cycle)]

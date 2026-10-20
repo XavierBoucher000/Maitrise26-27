@@ -195,8 +195,9 @@ def test_mode_matched_features_follow_crop_and_ap_pa_geometry():
 
 def test_model_methodology_document_covers_every_model_and_common_target():
     document = v3.build_model_methodology_document()
-    for index in range(10):
-        assert f"M{index} —" in document
+    for model in v3.MODEL_ORDER:
+        model_number = v3.MODEL_LABELS[model].split(" — ")[0]
+        assert f"{model_number} —" in document
     assert "S_eff(m) = R_planaire(m) / A_QSPECT" in document
     assert "A_planaire prédite = R_planaire(m) / S_eff(m) prédite" in document
     for rate_mode in v3.RATE_MODES:

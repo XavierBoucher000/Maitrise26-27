@@ -1,6 +1,7 @@
 """Compare three development CT HU-to-mu conversions.
 
-Outputs are written to ``fig/HU_conversion_comparison``. The activity
+Outputs are written under
+``fig/corrections/ct_attenuation/compare_ct_conversion_methods``. The activity
 comparison deliberately reuses the profile-matched planar crop for every conversion,
 so the CT conversion is the only changed correction setting. The direct T2
 Catphan curve is provisional because its QC reconstruction (B41s, 8 mm) does

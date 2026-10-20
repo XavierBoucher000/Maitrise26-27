@@ -1,7 +1,7 @@
 """Run patient-specific figure scripts over every complete dataset cycle.
 
 Each child script writes to:
-    fig/<script>/patient X/<cycle folder>/
+    fig/<category>/<script>/pX/<cycle folder>/
 
 Cycles with missing planar/Q/SPECT timepoints are reported and skipped instead
 of being silently mixed with another exam.
@@ -23,7 +23,7 @@ import study_layout
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-RUN_REPORT_DIR = figure_layout.FIG_ROOT / "_run_reports"
+RUN_REPORT_DIR = figure_layout.FIG_ROOT / "admin" / "run_reports"
 
 
 @dataclass(frozen=True)

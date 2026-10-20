@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import dicom_loader
+import dicom_series_dedup
 import figure_layout
 import planar_processing
 import qspect_processing
@@ -89,11 +90,13 @@ def is_ct_series_dir(series_dir: Path) -> bool:
 
 
 def find_ct_series_dirs(root_dir: Path) -> List[Path]:
-    return [
+    candidates = [
         series_dir
         for series_dir in qspect_processing.find_dicom_series_dirs(root_dir)
         if is_ct_series_dir(series_dir)
     ]
+    unique, _duplicates = dicom_series_dedup.deduplicate_series_dirs(candidates)
+    return unique
 
 
 def ct_priority(series_description: str) -> int:

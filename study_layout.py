@@ -8,6 +8,8 @@ from typing import Dict, List, NamedTuple, Optional
 
 import pydicom
 
+import dicom_series_dedup
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_DIR / "Data"
@@ -31,12 +33,19 @@ def discover_cycles(data_dir: Path = DATA_DIR) -> List[CycleDataset]:
         for qspect_dir in sorted(patient_dir.iterdir()):
             if not qspect_dir.is_dir() or CYCLE_RE.fullmatch(qspect_dir.name) is None:
                 continue
+            separate_planar_dir = patient_dir / f"{qspect_dir.name}_WBP"
             cycles.append(
                 CycleDataset(
                     patient=patient_dir.name,
                     cycle=qspect_dir.name,
                     qspect_dir=qspect_dir,
-                    planar_dir=patient_dir / f"{qspect_dir.name}_WBP",
+                    # New exports keep WB RAPIDE in the cycle folder itself.
+                    # Retain compatibility with the older separate _WBP tree.
+                    planar_dir=(
+                        separate_planar_dir
+                        if separate_planar_dir.exists()
+                        else qspect_dir
+                    ),
                 )
             )
     return cycles
@@ -53,15 +62,21 @@ def cycle_inventory(dataset: CycleDataset) -> Dict[str, object]:
     qspect_incomplete = 0
     qspect_details = []
     if dataset.planar_dir.exists():
+        planar_candidates = []
         for series_dir in dataset.planar_dir.iterdir():
             dicom_path = _first_dicom(series_dir) if series_dir.is_dir() else None
             if dicom_path is None:
                 continue
             ds = pydicom.dcmread(dicom_path, stop_before_pixels=True, force=True)
             if str(getattr(ds, "SeriesDescription", "")).strip().upper() == "WB RAPIDE":
-                planar_count += 1
+                planar_candidates.append(series_dir)
+        planar_unique, _planar_duplicates = (
+            dicom_series_dedup.deduplicate_series_dirs(planar_candidates)
+        )
+        planar_count = len(planar_unique)
 
     if dataset.qspect_dir.exists():
+        qspect_candidates = []
         for series_dir in dataset.qspect_dir.iterdir():
             dicom_path = _first_dicom(series_dir) if series_dir.is_dir() else None
             if dicom_path is None:
@@ -73,6 +88,14 @@ def cycle_inventory(dataset: CycleDataset) -> Dict[str, object]:
                 r"WB\s+QSPECT\s+Day\d+", description, re.IGNORECASE
             ) is None:
                 continue
+            qspect_candidates.append(series_dir)
+        qspect_unique, _qspect_duplicates = (
+            dicom_series_dedup.deduplicate_series_dirs(qspect_candidates)
+        )
+        for series_dir in qspect_unique:
+            dicom_path = _first_dicom(series_dir)
+            ds = pydicom.dcmread(dicom_path, stop_before_pixels=True, force=True)
+            description = str(getattr(ds, "SeriesDescription", "")).strip()
             actual = len(list(series_dir.glob("*.dcm")))
             match = re.search(r"_n(\d+)__", series_dir.name)
             expected = None if match is None else int(match.group(1))

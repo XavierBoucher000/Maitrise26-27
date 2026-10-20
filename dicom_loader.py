@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pydicom
 
+import dicom_series_dedup
+
 
 def is_dicom_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() == ".dcm"
@@ -556,14 +558,45 @@ def plot_decay_curve(patient_scans: Dict[str, Any]) -> None:
         plt.show()
 
 
-def load_patient_scans(patient_dir: Path, scan_name_filter: Optional[str] = None) -> Dict[str, Any]:
+def load_patient_scans(
+    patient_dir: Path,
+    scan_name_filter: Optional[str] = None,
+    series_description_filter: Optional[str] = None,
+) -> Dict[str, Any]:
     patient_dir = patient_dir.expanduser().resolve()
     scans = []
-    for scan_dir in find_scan_dirs(patient_dir):
+    scan_dirs = find_scan_dirs(patient_dir)
+    if scan_name_filter:
+        scan_dirs = [
+            scan_dir
+            for scan_dir in scan_dirs
+            if scan_name_filter.lower()
+            in scan_dir.relative_to(patient_dir).as_posix().lower()
+        ]
+    if series_description_filter:
+        expected_description = series_description_filter.strip().casefold()
+        filtered_dirs = []
+        for scan_dir in scan_dirs:
+            first_dicom = next(iter(sorted(scan_dir.glob("*.dcm"))), None)
+            if first_dicom is None:
+                continue
+            dataset = pydicom.dcmread(
+                first_dicom,
+                stop_before_pixels=True,
+                force=True,
+            )
+            description = str(
+                getattr(dataset, "SeriesDescription", "")
+            ).strip().casefold()
+            if description == expected_description:
+                filtered_dirs.append(scan_dir)
+        scan_dirs = filtered_dirs
+    scan_dirs, duplicates = dicom_series_dedup.deduplicate_series_dirs(scan_dirs)
+    for scan_dir in scan_dirs:
         scan_name = scan_dir.relative_to(patient_dir).as_posix()
-        if scan_name_filter and scan_name_filter.lower() not in scan_name.lower():
-            continue
         scan_data = load_scan_directory(scan_dir)
+        if not scan_data:
+            continue
         scans.append(
             {
                 "scan_name": scan_name,
@@ -576,6 +609,7 @@ def load_patient_scans(patient_dir: Path, scan_name_filter: Optional[str] = None
         "patient_path": patient_dir,
         "patient_id": patient_dir.name,
         "scans": scans,
+        "excluded_exact_duplicates": duplicates,
     }
 
 

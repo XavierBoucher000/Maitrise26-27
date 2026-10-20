@@ -75,3 +75,29 @@ def test_profile_crop_expands_a_boundary_limited_search():
     assert result["search_expanded"] is True
     assert result["effective_search_limit_px"] == 15
     assert result["search_attempts"] == 2
+
+
+def test_profile_crop_expands_after_poor_interior_local_maximum():
+    qspect = np.exp(-0.5 * ((np.arange(30) - 9.0) / 2.0) ** 2)
+    qspect += 0.7 * np.exp(-0.5 * ((np.arange(30) - 22.0) / 2.5) ** 2)
+    planar = np.zeros(140, dtype=float)
+    # A smooth, unrelated local candidate lies within the initial range.
+    planar[20:80] = np.linspace(0.1, 0.8, 60)
+    # The exact match is farther away and must be found after QC expansion.
+    planar[85:115] = qspect
+
+    result = profile_crop.search_profile_crop_with_quality_expansion(
+        planar,
+        qspect,
+        initial_top=40,
+        initial_max_shift_px=10,
+        maximum_shift_px=50,
+        expansion_step_px=10,
+        planar_spacing_mm=2.4,
+    )
+
+    assert result["crop_top"] == 85
+    assert result["match_accepted"] is True
+    assert result["search_expanded"] is True
+    assert result["effective_search_limit_px"] == 50
+    assert result["search_attempts"] == 5

@@ -198,6 +198,7 @@ def masked_tew_geometric_mean_for_scan(
         geometric_images,
         correction,
         timing.actual_frame_duration_s,
+        raw_images=images,
     )
     dead_time_info = correction["dead_time"] or {}
     dtcf = float(dead_time_info.get("dtcf", 1.0))

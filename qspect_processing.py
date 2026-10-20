@@ -9,6 +9,8 @@ from matplotlib.widgets import Slider
 import numpy as np
 import pydicom
 
+import dicom_series_dedup
+
 
 SELECTED_DAY = "Day0"
 
@@ -48,7 +50,13 @@ def expected_series_file_count(series_dir: Path) -> Optional[int]:
 
 
 def find_qspect_series_dirs(root_dir: Path) -> List[Path]:
-    return [series_dir for series_dir in find_dicom_series_dirs(root_dir) if is_qspect_series_dir(series_dir)]
+    candidates = [
+        series_dir
+        for series_dir in find_dicom_series_dirs(root_dir)
+        if is_qspect_series_dir(series_dir)
+    ]
+    unique, _duplicates = dicom_series_dedup.deduplicate_series_dirs(candidates)
+    return unique
 
 
 def parse_dicom_datetime(study_date: Any, acquisition_time: Any) -> Optional[datetime]:

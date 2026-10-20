@@ -557,7 +557,10 @@ def plot_time_normalized_decay_comparison(pairs: List[Dict[str, Any]]) -> None:
         FIT_FIGURE_PATH.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(FIT_FIGURE_PATH, dpi=300, bbox_inches="tight", facecolor="white")
         print(f"Saved fit figure: {FIT_FIGURE_PATH}")
-    show_figure(keep_open=True)
+    # Keep automated patient-cycle runs non-interactive.  The figure has
+    # already been saved above, so leaving the GUI window open blocks the
+    # batch runner indefinitely.
+    show_figure()
 
 
 def plot_activity_fit_comparison(pairs: List[Dict[str, Any]]) -> None:
@@ -1184,7 +1187,12 @@ def legacy_1j92g763_planar_tew_decay_data(patient_planar_dir: Path) -> List[Dict
         geometric_images = planar_processing.geometric_mean_images(remapped_images)
         correction = planar_processing.apply_tew_correction(geometric_images)
         duration_seconds = planar_processing.acquisition_duration_seconds(remapped_images)
-        correction = planar_processing.apply_dead_time_to_tew_correction(geometric_images, correction, duration_seconds)
+        correction = planar_processing.apply_dead_time_to_tew_correction(
+            geometric_images,
+            correction,
+            duration_seconds,
+            raw_images=images,
+        )
         scan_datetime = parse_dicom_datetime(scan_dir)
         fallback_day = parse_day_from_legacy_scan_name(scan_dir)
         dead_time_info = correction["dead_time"] or {}

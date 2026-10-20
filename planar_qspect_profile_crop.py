@@ -56,7 +56,10 @@ SEARCH_EXPANSION_STEP_CM = 5.0
 SMOOTHING_SIGMA_CM = 2.0
 EXCLUSION_RADIUS_PX = 5
 MIN_ACCEPTED_CORRELATION = 0.90
-MIN_ACCEPTED_PEAK_MARGIN = 0.01
+# The peak-width criterion already rejects broad/ambiguous maxima.  A small
+# numerical tolerance below 0.01 avoids rejecting a sharp maximum reported as
+# 0.009-0.010 solely because of sampling on the planar pixel grid.
+MIN_ACCEPTED_PEAK_MARGIN = 0.008
 MAX_ACCEPTED_PEAK_WIDTH_CM = 5.0
 PEAK_WIDTH_CORRELATION_LOSS = 0.01
 
@@ -225,6 +228,62 @@ def search_profile_crop_with_boundary_expansion(
         }
     )
     return result
+
+
+def search_profile_crop_with_quality_expansion(
+    planar_profile: np.ndarray,
+    qspect_profile: np.ndarray,
+    initial_top: int,
+    initial_max_shift_px: int,
+    maximum_shift_px: int,
+    expansion_step_px: int,
+    planar_spacing_mm: float,
+) -> Dict[str, Any]:
+    """Expand the search until the best match passes all QC criteria.
+
+    Expansion based only on a boundary hit can miss a stronger distant peak
+    when a weak local maximum lies inside the initial search interval.  This
+    routine retains the narrow mechanical prior first, but also expands after
+    a low correlation, insufficient peak margin, excessive peak width, or a
+    boundary hit.  The final result still falls back to the initial crop if no
+    candidate passes QC within the maximum displacement.
+    """
+    current_limit = max(0, int(initial_max_shift_px))
+    maximum_limit = max(current_limit, int(maximum_shift_px))
+    expansion_step = max(1, int(expansion_step_px))
+    attempts = 0
+
+    while True:
+        registration = search_profile_crop(
+            planar_profile,
+            qspect_profile,
+            initial_top=initial_top,
+            max_shift_px=current_limit,
+        )
+        registration.update(
+            {
+                "initial_top": int(initial_top),
+                "initial_bottom": int(initial_top) + int(qspect_profile.size),
+            }
+        )
+        checked = add_match_quality_control(
+            registration, planar_spacing_mm=float(planar_spacing_mm)
+        )
+        attempts += 1
+        if bool(checked["match_accepted"]) or current_limit >= maximum_limit:
+            break
+        current_limit = min(maximum_limit, current_limit + expansion_step)
+
+    checked.update(
+        {
+            "initial_search_limit_px": int(initial_max_shift_px),
+            "effective_search_limit_px": int(current_limit),
+            "search_expanded": bool(current_limit > int(initial_max_shift_px)),
+            "search_attempts": int(attempts),
+            "expansion_trigger": "match_quality_control",
+        }
+    )
+    return checked
 
 
 def add_match_quality_control(
@@ -433,13 +492,14 @@ def match_one_pair(
     expansion_step_px = int(
         np.rint(float(SEARCH_EXPANSION_STEP_CM) * 10.0 / planar_spacing)
     )
-    registration = search_profile_crop_with_boundary_expansion(
+    registration = search_profile_crop_with_quality_expansion(
         planar_profile,
         qspect_profile,
         initial_top=initial_top,
         initial_max_shift_px=max_shift_px,
         maximum_shift_px=maximum_shift_px,
         expansion_step_px=expansion_step_px,
+        planar_spacing_mm=planar_spacing,
     )
     registration.update(
         {
@@ -462,7 +522,6 @@ def match_one_pair(
             "smoothing_sigma_cm": float(smoothing_sigma_cm),
         }
     )
-    registration = add_match_quality_control(registration, planar_spacing)
     registration["shift_cm"] = registration["shift_px"] * planar_spacing / 10.0
     registration["proposed_shift_cm"] = (
         registration["proposed_shift_px"] * planar_spacing / 10.0
@@ -1108,11 +1167,12 @@ def write_outputs(rows: Sequence[Dict[str, Any]]) -> Tuple[Path, Path]:
         "  TEW AP/PA geometric mean and Q/SPECT coronal mean projection;",
         "  horizontal sums; resampling to planar row spacing; log compression;",
         "  Gaussian smoothing; bounded normalized cross-correlation.",
-        "  If the optimum touches the initial +/-20 cm boundary, the search",
-        "  expands in 5 cm steps, up to +/-40 cm, before quality control.",
+        "  The search starts at +/-20 cm and expands in 5 cm steps, up to",
+        "  +/-40 cm, whenever the current optimum fails quality control.",
         "  The existing Day-0 crop is only a provisional initial position until",
         "  a marker-based machine calibration supplies the true fixed offset.",
-        "  Acceptance requires correlation >= 0.90, peak margin >= 0.01,",
+        f"  Acceptance requires correlation >= {MIN_ACCEPTED_CORRELATION:.2f}, "
+        f"peak margin >= {MIN_ACCEPTED_PEAK_MARGIN:.3f},",
         "  no search-boundary maximum, and a QC peak width <= 5 cm.",
         "  An invalid match falls back to the initial Q/SPECT-length crop.",
         "  Peak width spans contiguous translations within 0.01 correlation of",

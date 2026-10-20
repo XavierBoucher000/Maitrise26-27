@@ -8,12 +8,30 @@ import figure_layout
 def test_patient_cycle_dir_uses_script_patient_cycle_hierarchy():
     assert figure_layout.patient_cycle_dir(
         Path("analysis.py"), "p8", "2026-06__Studies"
-    ) == figure_layout.FIG_ROOT / "analysis" / "p8" / "2026-06__Studies"
+    ) == (
+        figure_layout.FIG_ROOT
+        / "other"
+        / "analysis"
+        / "p8"
+        / "2026-06__Studies"
+    )
 
 
 def test_shared_dir_is_not_assigned_to_a_patient():
     assert figure_layout.shared_dir("hu_calibration.py") == (
-        figure_layout.FIG_ROOT / "hu_calibration" / "shared"
+        figure_layout.FIG_ROOT / "other" / "hu_calibration" / "shared"
+    )
+
+
+def test_known_analysis_is_routed_to_scientific_category():
+    assert figure_layout.patient_cycle_dir(
+        "planar_qspect_profile_crop.py", "p17", "2026-09__Studies"
+    ) == (
+        figure_layout.FIG_ROOT
+        / "crop_alignment"
+        / "planar_qspect_profile_crop"
+        / "p17"
+        / "2026-09__Studies"
     )
 
 

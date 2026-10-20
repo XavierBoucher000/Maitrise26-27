@@ -73,7 +73,7 @@ CYCLE_DATASETS = {
 
 
 def organized_output_dir(patient_id: str, cycle_id: str) -> Path:
-    """Return ``fig/<script>/<patient>/<cycle>`` for this analysis."""
+    """Return ``fig/models/<script>/<patient>/<cycle>`` for this analysis."""
     configured = CYCLE_DATASETS.get((patient_id, cycle_id))
     if configured is None:
         return figure_layout.patient_cycle_dir(__file__, patient_id, cycle_id)

@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 
 DATA_DIR = ROOT / "Data"
-FIG_ROOT = ROOT / "fig" / "metadonné"
+FIG_ROOT = ROOT / "fig" / "quality_control" / "metadonné"
 CT_GUIDE_PATH = FIG_ROOT / "shared" / "ct_series_guide.txt"
 
 # Un dossier de cycle "QSPECT" ressemble a "2026-06__Studies" (jamais "_WBP").

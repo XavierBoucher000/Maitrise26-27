@@ -6,6 +6,12 @@ the three P8 June acquisitions.  At every planar acquisition time, the target
 is the decay-consistent body activity inferred from injected activity and
 measured urine/diaper excretion.
 
+The strict three-point analysis remains the primary result.  A separate
+exploratory section fits a continuous cumulative-excretion curve, uses all
+five P11 acquisitions, and labels every target after the final collection as
+extrapolated.  It compares strict 3-to-3, fitted 3-to-3, and fitted 5-to-3
+P11-to-P8 transfer so that time alignment is not confused with extra data.
+
 No CT, ACCT, Q/SPECT activity or Q/SPECT-guided crop is loaded.  All image
 measurements use the complete planar image.  M0 is the primary simple test;
 the spectral models reused from v3 are exploratory.
@@ -25,6 +31,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.optimize import least_squares
 
 import attenuation_correction as ac
 import figure_layout
@@ -34,8 +41,15 @@ import planar_total_counts_retention as retention
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_DIR = figure_layout.shared_dir(__file__)
+DEFAULT_OUTPUT_DIR = (
+    figure_layout.analysis_dir(__file__)
+    / "3_sensibilite_modeles"
+    / "4_ancienne_analyse_p11_p8"
+    / "analyse_exploratoire"
+)
 DEFAULT_TIMEPOINT_COUNT = 3
+EXTENDED_P11_TIMEPOINT_COUNT = 5
+EXCRETION_BOOTSTRAP_SAMPLES = 300
 
 
 # Primary analysis requested by the supervisor: uncorrected whole-image counts.
@@ -96,7 +110,7 @@ TRAINING_DATASET = UrineDatasetSpec(
     patient_id="p11",
     cycle_id="2026-05__Studies",
     label="P11 — mai 2026",
-    planar_dir=PROJECT_DIR / "Data/p11/2026-05__Studies_WBP",
+    planar_dir=PROJECT_DIR / "Data/p11/2026-05__Studies",
     urine_csv=PROJECT_DIR / "Data/p11/P-011csv.csv",
 )
 TEST_DATASET = UrineDatasetSpec(
@@ -104,9 +118,18 @@ TEST_DATASET = UrineDatasetSpec(
     patient_id="p8",
     cycle_id="2026-06__Studies",
     label="P8 — juin 2026",
-    planar_dir=PROJECT_DIR / "Data/p8/2026-06__Studies_WBP",
+    planar_dir=PROJECT_DIR / "Data/p8/2026-06__Studies",
     urine_csv=PROJECT_DIR / "Data/p8/P-008.csv",
 )
+P17_DATASET = UrineDatasetSpec(
+    key="p17_september_urine",
+    patient_id="p17",
+    cycle_id="2026-09__Studies",
+    label="P17 — septembre 2026",
+    planar_dir=PROJECT_DIR / "Data/p17/2026-09__Studies",
+    urine_csv=PROJECT_DIR / "Data/p17/P-017.xlsx",
+)
+URINE_DATASETS = (TRAINING_DATASET, TEST_DATASET, P17_DATASET)
 
 
 # Only full-image modes are retained.  Crop modes from v3 depend on Q/SPECT
@@ -235,6 +258,324 @@ def urine_target_scenarios(
 def sang_decay_factor(times_h: np.ndarray, half_life_h: float) -> np.ndarray:
     """Local wrapper kept explicit for timing-scenario unit tests."""
     return np.exp(-math.log(2.0) * np.asarray(times_h) / half_life_h)
+
+
+def cumulative_excretion_biexponential(
+    elapsed_h: np.ndarray | float,
+    asymptote_mbq: float,
+    fast_fraction: float,
+    rate_fast_h_inv: float,
+    rate_slow_h_inv: float,
+) -> np.ndarray:
+    """Increasing cumulative excretion curve constrained to E(0)=0."""
+    time_h = np.asarray(elapsed_h, dtype=np.float64)
+    return asymptote_mbq * (
+        fast_fraction * (1.0 - np.exp(-rate_fast_h_inv * time_h))
+        + (1.0 - fast_fraction)
+        * (1.0 - np.exp(-rate_slow_h_inv * time_h))
+    )
+
+
+def _fit_cumulative_excretion_parameters(
+    collection_times_h: np.ndarray,
+    cumulative_equivalent_mbq: np.ndarray,
+    injected_activity_mbq: float,
+    preferred_start: np.ndarray | None = None,
+) -> Dict[str, Any]:
+    """Fit one bounded two-component cumulative excretion model."""
+    times = np.asarray(collection_times_h, dtype=np.float64)
+    values = np.asarray(cumulative_equivalent_mbq, dtype=np.float64)
+    if times.ndim != 1 or values.ndim != 1 or times.size != values.size:
+        raise ValueError("Collection times and cumulative excretion must be 1D peers")
+    if times.size < 5 or np.any(np.diff(times) <= 0.0):
+        raise ValueError("At least five ordered urine collections are required")
+    if np.any(np.diff(values) < 0.0) or np.any(values < 0.0):
+        raise ValueError("Cumulative excretion must be non-negative and monotonic")
+    injected = float(injected_activity_mbq)
+    maximum = float(np.max(values))
+    if not 0.0 <= maximum < injected:
+        raise ValueError("Cumulative excretion must remain below injected activity")
+
+    asymptote_starts = [
+        max(maximum, 0.90 * injected),
+        max(maximum, 0.95 * injected),
+        max(maximum, 0.88 * injected),
+        max(maximum, 0.98 * injected),
+    ]
+    starts = [
+        (asymptote_starts[0], 0.80, 0.10, 0.005),
+        (asymptote_starts[1], 0.50, 0.30, 0.020),
+        (asymptote_starts[2], 0.90, 1.00, 0.010),
+        (asymptote_starts[3], 0.30, 0.05, 0.003),
+    ]
+    if preferred_start is not None:
+        starts.insert(0, tuple(np.asarray(preferred_start, dtype=float)))
+
+    lower = np.asarray((maximum, 0.0, 1.0e-6, 1.0e-6), dtype=float)
+    upper = np.asarray((injected, 1.0, 5.0, 5.0), dtype=float)
+    best = None
+    for start in starts:
+        clipped_start = np.clip(
+            np.asarray(start, dtype=float),
+            lower + np.asarray((1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8)),
+            upper - np.asarray((1.0e-8, 1.0e-8, 1.0e-8, 1.0e-8)),
+        )
+        result = least_squares(
+            lambda parameters: (
+                cumulative_excretion_biexponential(times, *parameters) - values
+            ),
+            clipped_start,
+            bounds=(lower, upper),
+            max_nfev=100_000,
+        )
+        if not result.success:
+            continue
+        if best is None or float(np.sum(result.fun**2)) < float(
+            np.sum(best.fun**2)
+        ):
+            best = result
+    if best is None:
+        raise RuntimeError("Cumulative excretion fit did not converge")
+
+    parameters = np.asarray(best.x, dtype=float)
+    asymptote, fast_fraction, rate_fast, rate_slow = parameters
+    if rate_fast < rate_slow:
+        parameters = np.asarray(
+            [asymptote, 1.0 - fast_fraction, rate_slow, rate_fast], dtype=float
+        )
+    fitted = cumulative_excretion_biexponential(times, *parameters)
+    residuals = values - fitted
+    degrees_of_freedom = max(1, int(times.size - parameters.size))
+    residual_sigma = float(
+        np.sqrt(np.sum(residuals**2) / degrees_of_freedom)
+    )
+    return {
+        "parameters": parameters,
+        "fitted_collection_mbq": fitted,
+        "residuals_mbq": residuals,
+        "rmse_mbq": float(np.sqrt(np.mean(residuals**2))),
+        "residual_sigma_mbq": residual_sigma,
+        "asymptote_at_upper_bound": bool(
+            np.isclose(parameters[0], injected, rtol=0.0, atol=1.0e-3)
+        ),
+    }
+
+
+def fit_cumulative_excretion_target(
+    evaluation_times_h: np.ndarray,
+    urine_data: Mapping[str, Any],
+    urine_balance: Mapping[str, np.ndarray],
+    bootstrap_samples: int = EXCRETION_BOOTSTRAP_SAMPLES,
+    random_seed: int = 177,
+) -> Dict[str, Any]:
+    """Estimate a continuous urine-derived body-activity target.
+
+    Urine interval activities are already expressed on an injection-time-
+    equivalent scale in ``urine_balance``.  The returned body activity is
+    decayed forward to every imaging time.  Bootstrap intervals quantify only
+    residual uncertainty conditional on this bi-exponential model; they do not
+    cover model-form error or unmeasured excretion routes.
+    """
+    times = np.asarray(evaluation_times_h, dtype=np.float64)
+    collection_times = np.asarray(urine_balance["times_h"], dtype=np.float64)
+    cumulative = np.asarray(
+        urine_balance["cumulative_injection_equivalent_mbq"], dtype=np.float64
+    )
+    injected = float(urine_data["injected_activity_mbq"])
+    half_life_h = float(urine_data["half_life_h"])
+    fitted = _fit_cumulative_excretion_parameters(
+        collection_times, cumulative, injected
+    )
+    parameters = np.asarray(fitted["parameters"], dtype=float)
+    fitted_excretion = cumulative_excretion_biexponential(times, *parameters)
+    decay = sang_decay_factor(times, half_life_h)
+    reference_activity = (injected - fitted_excretion) * decay
+
+    rng = np.random.default_rng(random_seed)
+    bootstrap_parameters: list[np.ndarray] = []
+    fitted_at_collections = np.asarray(
+        fitted["fitted_collection_mbq"], dtype=float
+    )
+    residuals = np.asarray(fitted["residuals_mbq"], dtype=float)
+    for _ in range(max(0, int(bootstrap_samples))):
+        synthetic = fitted_at_collections + rng.choice(
+            residuals, size=residuals.size, replace=True
+        )
+        synthetic = np.maximum.accumulate(
+            np.clip(synthetic, 0.0, injected * (1.0 - 1.0e-8))
+        )
+        try:
+            bootstrap_fit = _fit_cumulative_excretion_parameters(
+                collection_times,
+                synthetic,
+                injected,
+                preferred_start=parameters,
+            )
+        except (RuntimeError, ValueError):
+            continue
+        bootstrap_parameters.append(
+            np.asarray(bootstrap_fit["parameters"], dtype=float)
+        )
+
+    if bootstrap_parameters:
+        parameter_samples = np.vstack(bootstrap_parameters)
+        target_samples = np.vstack(
+            [
+                (
+                    injected
+                    - cumulative_excretion_biexponential(times, *sample)
+                )
+                * decay
+                for sample in parameter_samples
+            ]
+        )
+        lower = np.percentile(target_samples, 2.5, axis=0)
+        upper = np.percentile(target_samples, 97.5, axis=0)
+    else:
+        parameter_samples = np.empty((0, 4), dtype=float)
+        lower = reference_activity.copy()
+        upper = reference_activity.copy()
+
+    last_collection_h = float(collection_times[-1])
+    extrapolated = times > last_collection_h
+    return {
+        **fitted,
+        "collection_times_h": collection_times,
+        "measured_cumulative_equivalent_mbq": cumulative,
+        "evaluation_times_h": times,
+        "fitted_cumulative_equivalent_mbq": fitted_excretion,
+        "reference_activity_mbq": reference_activity,
+        "reference_lower_mbq": lower,
+        "reference_upper_mbq": upper,
+        "last_collection_h": last_collection_h,
+        "is_extrapolated": extrapolated,
+        "hours_after_last_collection": np.maximum(times - last_collection_h, 0.0),
+        "bootstrap_parameters": parameter_samples,
+        "bootstrap_successful_samples": int(parameter_samples.shape[0]),
+        "bootstrap_requested_samples": int(max(0, bootstrap_samples)),
+    }
+
+
+def apply_fitted_excretion_target(
+    dataset: Mapping[str, Any],
+    bootstrap_samples: int = EXCRETION_BOOTSTRAP_SAMPLES,
+    random_seed: int = 177,
+) -> Dict[str, Any]:
+    """Replace a dataset target by a urine-only fitted continuous target."""
+    evaluation_times = np.asarray(
+        [record["hours_after_injection"] for record in dataset["records"]],
+        dtype=float,
+    )
+    fit = fit_cumulative_excretion_target(
+        evaluation_times,
+        dataset["urine_data"],
+        dataset["urine_balance"],
+        bootstrap_samples=bootstrap_samples,
+        random_seed=random_seed,
+    )
+    reference = np.asarray(fit["reference_activity_mbq"], dtype=float)
+    records: list[Dict[str, Any]] = []
+    for index, source in enumerate(dataset["records"]):
+        record = dict(source)
+        record.update(
+            {
+                "completed_only_reference_activity_mbq": float(
+                    source["urine_remaining_activity_mbq"]
+                ),
+                "urine_remaining_activity_mbq": float(reference[index]),
+                "fitted_excretion_reference_activity_mbq": float(
+                    reference[index]
+                ),
+                "fitted_excretion_reference_lower_mbq": float(
+                    fit["reference_lower_mbq"][index]
+                ),
+                "fitted_excretion_reference_upper_mbq": float(
+                    fit["reference_upper_mbq"][index]
+                ),
+                "reference_source": "fitted_cumulative_excretion",
+                "excretion_target_status": (
+                    "extrapolated"
+                    if bool(fit["is_extrapolated"][index])
+                    else "interpolated"
+                ),
+                "hours_after_last_collection": float(
+                    fit["hours_after_last_collection"][index]
+                ),
+            }
+        )
+        records.append(record)
+
+    mode_observations: Dict[str, Dict[str, Any]] = {}
+    for mode, observation in dataset["mode_observations"].items():
+        rate = np.asarray(observation["measurement_rate"], dtype=float)
+        mode_observations[mode] = {
+            **observation,
+            "records": records,
+            "reference_activity": reference,
+            "target_sensitivity": rate / reference,
+        }
+    return {
+        **dataset,
+        "records": records,
+        "reference_activity": reference,
+        "mode_observations": mode_observations,
+        "reference_source": "fitted_cumulative_excretion",
+        "excretion_fit": fit,
+    }
+
+
+def subset_urine_dataset(
+    dataset: Mapping[str, Any], timepoint_count: int
+) -> Dict[str, Any]:
+    """Return the first observations while preserving fitted-curve metadata."""
+    count = int(timepoint_count)
+    total = len(dataset["records"])
+    if count < 1 or count > total:
+        raise ValueError(f"Requested {count} of {total} urine observations")
+    records = list(dataset["records"][:count])
+    reference = np.asarray(dataset["reference_activity"], dtype=float)[:count]
+    modes: Dict[str, Dict[str, Any]] = {}
+    for mode, observation in dataset["mode_observations"].items():
+        rate = np.asarray(observation["measurement_rate"], dtype=float)[:count]
+        modes[mode] = {
+            **observation,
+            "records": records,
+            "features": {
+                name: np.asarray(values, dtype=float)[:count]
+                for name, values in observation["features"].items()
+            },
+            "measurement_rate": rate,
+            "reference_activity": reference,
+            "target_sensitivity": rate / reference,
+        }
+    output: Dict[str, Any] = {
+        **dataset,
+        "records": records,
+        "reference_activity": reference,
+        "mode_observations": modes,
+        "simple_rates": {
+            name: np.asarray(values, dtype=float)[:count]
+            for name, values in dataset["simple_rates"].items()
+        },
+        "timing_scenarios": {
+            name: np.asarray(values, dtype=float)[:count]
+            for name, values in dataset["timing_scenarios"].items()
+        },
+    }
+    if "excretion_fit" in dataset:
+        fit = dict(dataset["excretion_fit"])
+        for name in (
+            "evaluation_times_h",
+            "fitted_cumulative_equivalent_mbq",
+            "reference_activity_mbq",
+            "reference_lower_mbq",
+            "reference_upper_mbq",
+            "is_extrapolated",
+            "hours_after_last_collection",
+        ):
+            fit[name] = np.asarray(fit[name])[:count]
+        output["excretion_fit"] = fit
+    return output
 
 
 def build_urine_dataset(
@@ -572,6 +913,15 @@ def j0_calibration_rows(
                     "timepoint": record["timepoint"],
                     "hours_after_injection": record["hours_after_injection"],
                     "used_for_calibration": index == 0,
+                    "reference_source": record.get(
+                        "reference_source", "completed_collections_only"
+                    ),
+                    "excretion_target_status": record.get(
+                        "excretion_target_status", "measured_step_target"
+                    ),
+                    "hours_after_last_collection": record.get(
+                        "hours_after_last_collection", math.nan
+                    ),
                     "measurement_rate_cps": float(rate[index]),
                     "urine_reference_activity_mbq": float(reference[index]),
                     "predicted_activity_mbq": float(prediction[index]),
@@ -604,6 +954,152 @@ def j0_calibration_rows(
             }
         )
     return prediction_rows, summary_rows
+
+
+def fitted_target_rows(dataset: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    """Flatten fitted urine targets and their support status for inspection."""
+    fit = dataset["excretion_fit"]
+    rows: list[Dict[str, Any]] = []
+    for index, record in enumerate(dataset["records"]):
+        rows.append(
+            {
+                "dataset_key": dataset["spec"].key,
+                "patient_id": dataset["spec"].patient_id,
+                "cycle_id": dataset["spec"].cycle_id,
+                "timepoint": record["timepoint"],
+                "hours_after_injection": record["hours_after_injection"],
+                "target_status": record["excretion_target_status"],
+                "hours_after_last_collection": record[
+                    "hours_after_last_collection"
+                ],
+                "completed_only_reference_activity_mbq": record[
+                    "completed_only_reference_activity_mbq"
+                ],
+                "fitted_excretion_cumulative_equivalent_mbq": float(
+                    fit["fitted_cumulative_equivalent_mbq"][index]
+                ),
+                "fitted_reference_activity_mbq": float(
+                    fit["reference_activity_mbq"][index]
+                ),
+                "bootstrap_reference_lower_mbq": float(
+                    fit["reference_lower_mbq"][index]
+                ),
+                "bootstrap_reference_upper_mbq": float(
+                    fit["reference_upper_mbq"][index]
+                ),
+            }
+        )
+    return rows
+
+
+def extended_j0_summary_rows(
+    dataset: Mapping[str, Any],
+    results: Mapping[str, Mapping[str, Any]],
+) -> list[Dict[str, Any]]:
+    """Score J0 calibration separately inside and outside urine-fit support."""
+    flags = np.asarray(dataset["excretion_fit"]["is_extrapolated"], dtype=bool)
+    followup = np.arange(flags.size) > 0
+    supported = followup & ~flags
+    extrapolated = followup & flags
+    rows: list[Dict[str, Any]] = []
+    for method in SIMPLE_METHOD_ORDER:
+        result = results[method]
+        reference = np.asarray(result["reference_activity_mbq"], dtype=float)
+        prediction = np.asarray(result["predicted_activity_mbq"], dtype=float)
+        row: Dict[str, Any] = {
+            "dataset_key": dataset["spec"].key,
+            "patient_id": dataset["spec"].patient_id,
+            "cycle_id": dataset["spec"].cycle_id,
+            "method": method,
+            "method_label": SIMPLE_METHOD_LABELS[method],
+            "sensitivity_j0_cps_per_mbq": result[
+                "sensitivity_j0_cps_per_mbq"
+            ],
+            "all_followup_n": int(np.count_nonzero(followup)),
+            "supported_followup_n": int(np.count_nonzero(supported)),
+            "extrapolated_followup_n": int(np.count_nonzero(extrapolated)),
+        }
+        for prefix, mask in (
+            ("all_followup", followup),
+            ("supported_followup", supported),
+            ("extrapolated_followup", extrapolated),
+        ):
+            if np.any(mask):
+                metrics = _activity_metrics(reference[mask], prediction[mask])
+                row[f"{prefix}_bias_percent"] = metrics[
+                    "activity_bias_percent"
+                ]
+                row[f"{prefix}_mare_percent"] = metrics[
+                    "activity_mare_percent"
+                ]
+                row[f"{prefix}_rmse_percent"] = metrics[
+                    "activity_rmse_percent"
+                ]
+                row[f"{prefix}_max_error_percent"] = metrics[
+                    "maximum_activity_error_percent"
+                ]
+            else:
+                for suffix in (
+                    "bias_percent",
+                    "mare_percent",
+                    "rmse_percent",
+                    "max_error_percent",
+                ):
+                    row[f"{prefix}_{suffix}"] = math.nan
+        rows.append(row)
+    return rows
+
+
+def simple_transfer_comparison_rows(
+    strict_results: Mapping[str, Mapping[str, Any]],
+    fitted_three_results: Mapping[str, Mapping[str, Any]],
+    fitted_five_results: Mapping[str, Mapping[str, Any]],
+) -> list[Dict[str, Any]]:
+    """Compare strict timing, fitted timing, and five-point P11 training."""
+    scenarios = (
+        (
+            "strict_3_to_3",
+            "Collectes terminées: P11 3 → P8 3",
+            strict_results,
+            3,
+        ),
+        (
+            "fitted_3_to_3",
+            "Excrétion ajustée: P11 3 → P8 3",
+            fitted_three_results,
+            3,
+        ),
+        (
+            "fitted_5_to_3",
+            "Excrétion ajustée: P11 5 → P8 3",
+            fitted_five_results,
+            5,
+        ),
+    )
+    rows: list[Dict[str, Any]] = []
+    for scenario, label, results, n_train in scenarios:
+        for method in SIMPLE_METHOD_ORDER:
+            result = results[method]
+            rows.append(
+                {
+                    "scenario": scenario,
+                    "scenario_label": label,
+                    "n_train": n_train,
+                    "n_test": 3,
+                    "method": method,
+                    "method_label": SIMPLE_METHOD_LABELS[method],
+                    "sensitivity_p11_cps_per_mbq": result[
+                        "sensitivity_cps_per_mbq"
+                    ],
+                    "p8_bias_percent": result["activity_bias_percent"],
+                    "p8_mare_percent": result["activity_mare_percent"],
+                    "p8_rmse_percent": result["activity_rmse_percent"],
+                    "p8_max_error_percent": result[
+                        "maximum_activity_error_percent"
+                    ],
+                }
+            )
+    return rows
 
 
 def sensitivity_stability_rows(
@@ -934,6 +1430,18 @@ def plot_normalized_simple_sensitivity(
                 markersize=6.5,
                 label=SIMPLE_METHOD_LABELS[method],
             )
+        fit = dataset.get("excretion_fit")
+        if fit is not None:
+            extrapolated = np.asarray(fit["is_extrapolated"], dtype=bool)
+            if np.any(extrapolated):
+                first = int(np.flatnonzero(extrapolated)[0])
+                axis.axvspan(
+                    first - 0.45,
+                    len(records) - 0.55,
+                    color="#F4CCCC",
+                    alpha=0.40,
+                    label="Cible urinaire extrapolée",
+                )
         axis.set_xticks(x, [record["timepoint"] for record in records])
         axis.set_xlabel("Timepoint")
         axis.set_ylabel("S_eff(t) / S_eff(J0)")
@@ -952,6 +1460,491 @@ def plot_normalized_simple_sensitivity(
     )
     fig.suptitle("Stabilité temporelle de la sensibilité effective", y=0.985)
     fig.subplots_adjust(top=0.76, bottom=0.13, wspace=0.20)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
+def plot_simple_sensitivity_vs_time(
+    datasets: Sequence[Mapping[str, Any]],
+    output_path: Path,
+    title: str,
+) -> Path:
+    """Show absolute urine-derived sensitivity for each raw count definition."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(2, 3, figsize=(15.2, 9.0), layout="constrained")
+    patient_colors = {"p11": "#1F77B4", "p8": "#D62728"}
+    patient_markers = {"p11": "o", "p8": "s"}
+    for axis, method in zip(axes.flat, SIMPLE_METHOD_ORDER):
+        for dataset in datasets:
+            patient_id = dataset["spec"].patient_id
+            times = np.asarray(
+                [record["hours_after_injection"] for record in dataset["records"]],
+                dtype=float,
+            )
+            activity = np.asarray(dataset["reference_activity"], dtype=float)
+            rate = np.asarray(dataset["simple_rates"][method], dtype=float)
+            sensitivity = rate / activity
+            axis.plot(
+                times,
+                sensitivity,
+                color=patient_colors.get(patient_id, "#555555"),
+                marker=patient_markers.get(patient_id, "o"),
+                linewidth=2.0,
+                markersize=6.5,
+                label=dataset["spec"].label,
+            )
+            fit = dataset.get("excretion_fit")
+            if fit is not None:
+                extrapolated = np.asarray(fit["is_extrapolated"], dtype=bool)
+                if np.any(extrapolated):
+                    axis.scatter(
+                        times[extrapolated],
+                        sensitivity[extrapolated],
+                        s=90,
+                        facecolors="white",
+                        edgecolors="#D62728",
+                        linewidths=2.0,
+                        zorder=6,
+                        label="Cible extrapolée" if method == SIMPLE_METHOD_ORDER[0] else None,
+                    )
+        axis.set_title(SIMPLE_METHOD_LABELS[method])
+        axis.set_xlabel("Temps après injection (h)")
+        axis.set_ylabel("S_eff,urine (cps/MBq)")
+        axis.grid(True, linestyle="--", alpha=0.24)
+        axis.spines[["top", "right"]].set_visible(False)
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.04),
+        ncol=3,
+        frameon=False,
+    )
+    fig.suptitle(title, fontsize=16, y=1.08)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
+def plot_day0_patient_sensitivity_ratio(
+    strict_training: Mapping[str, Any],
+    strict_test: Mapping[str, Any],
+    fitted_training: Mapping[str, Any],
+    fitted_test: Mapping[str, Any],
+    output_path: Path,
+) -> Path:
+    """Compare P8/P11 effective sensitivity at J0 for both urine targets."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    x = np.arange(len(SIMPLE_METHOD_ORDER), dtype=float)
+    strict_ratios: list[float] = []
+    fitted_ratios: list[float] = []
+    for method in SIMPLE_METHOD_ORDER:
+        strict_p11 = (
+            float(strict_training["simple_rates"][method][0])
+            / float(strict_training["reference_activity"][0])
+        )
+        strict_p8 = (
+            float(strict_test["simple_rates"][method][0])
+            / float(strict_test["reference_activity"][0])
+        )
+        fitted_p11 = (
+            float(fitted_training["simple_rates"][method][0])
+            / float(fitted_training["reference_activity"][0])
+        )
+        fitted_p8 = (
+            float(fitted_test["simple_rates"][method][0])
+            / float(fitted_test["reference_activity"][0])
+        )
+        strict_ratios.append(100.0 * strict_p8 / strict_p11)
+        fitted_ratios.append(100.0 * fitted_p8 / fitted_p11)
+
+    width = 0.36
+    fig, axis = plt.subplots(figsize=(13.8, 6.8))
+    strict_bars = axis.bar(
+        x - width / 2,
+        strict_ratios,
+        width,
+        color="#7F7F7F",
+        label="Collectes terminées",
+    )
+    fitted_bars = axis.bar(
+        x + width / 2,
+        fitted_ratios,
+        width,
+        color="#2C7FB8",
+        label="Fit urinaire continu",
+    )
+    axis.axhline(100.0, color="black", linewidth=1.6, label="Sensibilités identiques")
+    axis.axhspan(90.0, 110.0, color="#D9EAD3", alpha=0.65, zorder=0)
+    axis.bar_label(strict_bars, fmt="%.1f", padding=3, fontsize=9.5)
+    axis.bar_label(fitted_bars, fmt="%.1f", padding=3, fontsize=9.5)
+    axis.set_xticks(
+        x,
+        [SIMPLE_METHOD_LABELS[method].replace(" — ", "\n") for method in SIMPLE_METHOD_ORDER],
+    )
+    axis.set_ylabel("Sensibilité J0 de P8 / sensibilité J0 de P11 (%)")
+    axis.set_title("La sensibilité effective ne se transfère pas parfaitement dès J0")
+    axis.set_ylim(0.0, 115.0)
+    axis.grid(True, axis="y", linestyle="--", alpha=0.25)
+    axis.spines[["top", "right"]].set_visible(False)
+    axis.legend(frameon=False, ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.12))
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
+def plot_primary_intrapatient_mare(
+    summary_rows: Sequence[Mapping[str, Any]], output_path: Path
+) -> Path:
+    """Summarize J0-calibrated follow-up MARE for P11 and P8."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    x = np.arange(len(SIMPLE_METHOD_ORDER), dtype=float)
+    width = 0.36
+    fig, axis = plt.subplots(figsize=(13.8, 6.8))
+    for offset, patient_id, color, label in (
+        (-width / 2, "p11", "#1F77B4", "P11 : J0 → J1/J2"),
+        (width / 2, "p8", "#D62728", "P8 : J0 → J1/J2"),
+    ):
+        values = [
+            float(
+                next(
+                    row
+                    for row in summary_rows
+                    if row["patient_id"] == patient_id and row["method"] == method
+                )["followup_mare_percent"]
+            )
+            for method in SIMPLE_METHOD_ORDER
+        ]
+        bars = axis.bar(x + offset, values, width, color=color, label=label)
+        axis.bar_label(bars, fmt="%.1f", padding=3, fontsize=9.2)
+    axis.set_xticks(
+        x,
+        [SIMPLE_METHOD_LABELS[method].replace(" — ", "\n") for method in SIMPLE_METHOD_ORDER],
+    )
+    axis.set_ylabel("MARE après calibration à J0 (%)")
+    axis.set_title("Stabilité intrapatient d’une sensibilité calibrée à J0")
+    axis.grid(True, axis="y", linestyle="--", alpha=0.25)
+    axis.spines[["top", "right"]].set_visible(False)
+    axis.legend(frameon=False, ncol=2, loc="upper center", bbox_to_anchor=(0.5, 1.10))
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
+def _bootstrap_fit_envelope(
+    fit: Mapping[str, Any], grid_h: np.ndarray, injected_mbq: float, half_life_h: float
+) -> Dict[str, np.ndarray]:
+    """Evaluate fitted excretion and body-activity bootstrap envelopes."""
+    grid = np.asarray(grid_h, dtype=float)
+    excretion = cumulative_excretion_biexponential(
+        grid, *np.asarray(fit["parameters"], dtype=float)
+    )
+    body = (injected_mbq - excretion) * sang_decay_factor(grid, half_life_h)
+    samples = np.asarray(fit["bootstrap_parameters"], dtype=float)
+    if samples.size == 0:
+        return {
+            "excretion": excretion,
+            "excretion_lower": excretion,
+            "excretion_upper": excretion,
+            "body": body,
+            "body_lower": body,
+            "body_upper": body,
+        }
+    excretion_samples = np.vstack(
+        [cumulative_excretion_biexponential(grid, *sample) for sample in samples]
+    )
+    body_samples = (
+        injected_mbq - excretion_samples
+    ) * sang_decay_factor(grid, half_life_h)[None, :]
+    return {
+        "excretion": excretion,
+        "excretion_lower": np.percentile(excretion_samples, 2.5, axis=0),
+        "excretion_upper": np.percentile(excretion_samples, 97.5, axis=0),
+        "body": body,
+        "body_lower": np.percentile(body_samples, 2.5, axis=0),
+        "body_upper": np.percentile(body_samples, 97.5, axis=0),
+    }
+
+
+def plot_fitted_excretion_targets(
+    datasets: Sequence[Mapping[str, Any]], output_path: Path
+) -> Path:
+    """Show urine-only fits and the resulting continuous body targets."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(len(datasets), 2, figsize=(14.0, 5.2 * len(datasets)))
+    axes = np.atleast_2d(axes)
+    for row_index, dataset in enumerate(datasets):
+        fit = dataset["excretion_fit"]
+        injected = float(dataset["urine_data"]["injected_activity_mbq"])
+        half_life_h = float(dataset["urine_data"]["half_life_h"])
+        evaluation_times = np.asarray(fit["evaluation_times_h"], dtype=float)
+        grid = np.linspace(0.0, float(max(evaluation_times.max(), fit["last_collection_h"])), 500)
+        envelope = _bootstrap_fit_envelope(fit, grid, injected, half_life_h)
+        supported = grid <= float(fit["last_collection_h"])
+        extrapolated = ~supported
+
+        excretion_axis = axes[row_index, 0]
+        excretion_axis.fill_between(
+            grid,
+            envelope["excretion_lower"] / 1000.0,
+            envelope["excretion_upper"] / 1000.0,
+            color="#9ECAE1",
+            alpha=0.38,
+            label="IC bootstrap conditionnel 95 %",
+        )
+        excretion_axis.plot(
+            grid[supported],
+            envelope["excretion"][supported] / 1000.0,
+            color="#1F77B4",
+            linewidth=2.4,
+            label="Fit bi-exponentiel",
+        )
+        if np.any(extrapolated):
+            excretion_axis.plot(
+                grid[extrapolated],
+                envelope["excretion"][extrapolated] / 1000.0,
+                color="#D62728",
+                linewidth=2.4,
+                linestyle="--",
+                label="Extrapolation du fit",
+            )
+        excretion_axis.scatter(
+            np.asarray(fit["collection_times_h"]),
+            np.asarray(fit["measured_cumulative_equivalent_mbq"]) / 1000.0,
+            color="black",
+            marker="o",
+            s=42,
+            zorder=5,
+            label="Collectes mesurées",
+        )
+        excretion_axis.axvline(
+            float(fit["last_collection_h"]),
+            color="#666666",
+            linestyle=":",
+            linewidth=1.5,
+        )
+        excretion_axis.set_title(f"{dataset['spec'].label} — excrétion cumulative")
+        excretion_axis.set_xlabel("Temps après injection (h)")
+        excretion_axis.set_ylabel("Activité équivalente à t=0 (GBq)")
+
+        body_axis = axes[row_index, 1]
+        body_axis.fill_between(
+            grid,
+            envelope["body_lower"] / 1000.0,
+            envelope["body_upper"] / 1000.0,
+            color="#A1D99B",
+            alpha=0.38,
+            label="IC bootstrap conditionnel 95 %",
+        )
+        body_axis.plot(
+            grid[supported],
+            envelope["body"][supported] / 1000.0,
+            color="#238B45",
+            linewidth=2.4,
+            label="Cible corporelle ajustée",
+        )
+        if np.any(extrapolated):
+            body_axis.plot(
+                grid[extrapolated],
+                envelope["body"][extrapolated] / 1000.0,
+                color="#D62728",
+                linewidth=2.4,
+                linestyle="--",
+                label="Cible extrapolée",
+            )
+        strict_reference = np.asarray(
+            [
+                record["completed_only_reference_activity_mbq"]
+                for record in dataset["records"]
+            ],
+            dtype=float,
+        )
+        body_axis.scatter(
+            evaluation_times,
+            strict_reference / 1000.0,
+            color="#777777",
+            marker="x",
+            s=52,
+            linewidth=1.8,
+            label="Cible par collectes terminées",
+            zorder=5,
+        )
+        for is_extrapolated, color, label in (
+            (False, "#1F77B4", "Acquisition interpolée"),
+            (True, "#D62728", "Acquisition extrapolée"),
+        ):
+            mask = np.asarray(fit["is_extrapolated"], dtype=bool) == is_extrapolated
+            if np.any(mask):
+                body_axis.scatter(
+                    evaluation_times[mask],
+                    np.asarray(fit["reference_activity_mbq"])[mask] / 1000.0,
+                    color=color,
+                    marker="*",
+                    s=95,
+                    label=label,
+                    zorder=6,
+                )
+        body_axis.axvline(
+            float(fit["last_collection_h"]),
+            color="#666666",
+            linestyle=":",
+            linewidth=1.5,
+        )
+        body_axis.set_title(f"{dataset['spec'].label} — cible d’activité corporelle")
+        body_axis.set_xlabel("Temps après injection (h)")
+        body_axis.set_ylabel("Activité corporelle (GBq)")
+
+        for axis in (excretion_axis, body_axis):
+            axis.grid(True, linestyle="--", alpha=0.23)
+            axis.spines[["top", "right"]].set_visible(False)
+            axis.legend(frameon=False, fontsize=8.6)
+    fig.suptitle(
+        "Cible continue obtenue uniquement par le fit des collectes urinaires",
+        fontsize=15,
+        y=0.995,
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.98))
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
+def plot_extended_j0_predictions(
+    datasets_and_results: Sequence[
+        tuple[Mapping[str, Any], Mapping[str, Mapping[str, Any]]]
+    ],
+    output_path: Path,
+) -> Path:
+    """Show J0 calibration against fitted-excretion targets at all timepoints."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, len(datasets_and_results), figsize=(14.2, 6.4))
+    axes = np.atleast_1d(axes)
+    for axis, (dataset, results) in zip(axes, datasets_and_results):
+        records = list(dataset["records"])
+        x = np.arange(len(records))
+        fit = dataset["excretion_fit"]
+        reference = np.asarray(dataset["reference_activity"], dtype=float)
+        axis.fill_between(
+            x,
+            np.asarray(fit["reference_lower_mbq"]) / 1000.0,
+            np.asarray(fit["reference_upper_mbq"]) / 1000.0,
+            color="#BDBDBD",
+            alpha=0.32,
+            label="IC bootstrap de la cible",
+        )
+        axis.plot(
+            x,
+            reference / 1000.0,
+            color="black",
+            marker="*",
+            linewidth=2.4,
+            markersize=9,
+            label="Cible par excrétion ajustée",
+            zorder=5,
+        )
+        for method in SIMPLE_METHOD_ORDER:
+            predicted = np.asarray(
+                results[method]["predicted_activity_mbq"], dtype=float
+            )
+            axis.plot(
+                x,
+                predicted / 1000.0,
+                color=SIMPLE_METHOD_COLORS[method],
+                marker=SIMPLE_METHOD_MARKERS[method],
+                linewidth=1.7,
+                markersize=6.0,
+                label=SIMPLE_METHOD_LABELS[method],
+            )
+        extrapolated = np.asarray(fit["is_extrapolated"], dtype=bool)
+        if np.any(extrapolated):
+            first = int(np.flatnonzero(extrapolated)[0])
+            axis.axvspan(
+                first - 0.45,
+                len(records) - 0.55,
+                color="#F4CCCC",
+                alpha=0.45,
+                label="Cible urinaire extrapolée",
+            )
+        axis.set_xticks(x, [record["timepoint"] for record in records])
+        axis.set_xlabel("J0 calibre; tous les points suivants sont prédits")
+        axis.set_ylabel("Activité corporelle (GBq)")
+        axis.set_title(dataset["spec"].label)
+        axis.grid(True, axis="y", linestyle="--", alpha=0.24)
+        axis.spines[["top", "right"]].set_visible(False)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.93),
+        ncol=4,
+        frameon=False,
+        fontsize=8.7,
+    )
+    fig.suptitle(
+        "Calibration J0 avec cible d’excrétion continue — analyse exploratoire",
+        y=0.99,
+        fontsize=15,
+    )
+    fig.subplots_adjust(top=0.74, bottom=0.13, wspace=0.20)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
+def plot_transfer_scenario_comparison(
+    comparison_rows: Sequence[Mapping[str, Any]], output_path: Path
+) -> Path:
+    """Compare P11-to-P8 error before and after fitted-excretion extension."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    scenario_order = ("strict_3_to_3", "fitted_3_to_3", "fitted_5_to_3")
+    labels = {
+        "strict_3_to_3": "Collectes terminées\nP11 3 → P8 3",
+        "fitted_3_to_3": "Fit urinaire\nP11 3 → P8 3",
+        "fitted_5_to_3": "Fit urinaire\nP11 5 → P8 3",
+    }
+    colors = {
+        "strict_3_to_3": "#969696",
+        "fitted_3_to_3": "#6BAED6",
+        "fitted_5_to_3": "#2171B5",
+    }
+    x = np.arange(len(SIMPLE_METHOD_ORDER), dtype=float)
+    width = 0.25
+    fig, axis = plt.subplots(figsize=(14.2, 6.8))
+    for offset_index, scenario in enumerate(scenario_order):
+        values = [
+            float(
+                next(
+                    row
+                    for row in comparison_rows
+                    if row["scenario"] == scenario and row["method"] == method
+                )["p8_mare_percent"]
+            )
+            for method in SIMPLE_METHOD_ORDER
+        ]
+        positions = x + (offset_index - 1) * width
+        bars = axis.bar(
+            positions,
+            values,
+            width=width,
+            color=colors[scenario],
+            label=labels[scenario],
+        )
+        axis.bar_label(bars, fmt="%.1f", padding=2, fontsize=8.4)
+    axis.set_xticks(
+        x,
+        [SIMPLE_METHOD_LABELS[method].replace(" — ", "\n") for method in SIMPLE_METHOD_ORDER],
+    )
+    axis.set_ylabel("MARE sur les 3 timepoints P8 (%)")
+    axis.set_title("Effet du fit urinaire et des deux timepoints P11 supplémentaires")
+    axis.grid(True, axis="y", linestyle="--", alpha=0.25)
+    axis.spines[["top", "right"]].set_visible(False)
+    axis.legend(frameon=False, ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.14))
+    fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return output_path
@@ -1191,6 +2184,130 @@ def plot_mode_model_mare(
     return output_path
 
 
+def plot_urine_six_mode_primary_mare(
+    metrics_rows: Sequence[Mapping[str, Any]],
+    output_path: Path,
+    subtitle: str,
+) -> Path:
+    """Compare full-image TEW/raw and GM/AP+PA model performance."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    panel_modes = (
+        v3.MODE_TEW_FULL_GM,
+        v3.MODE_TEW_FULL_AP_PA,
+        v3.MODE_RAW_FULL_GM,
+        v3.MODE_RAW_FULL_AP_PA,
+    )
+    processing_labels = (
+        "Image complète + GM",
+        "Image complète + AP+PA",
+    )
+    row_labels = ("Avec TEW", "Photopeak brut")
+    row_colors = ("#2E9F55", "#1F77B4")
+    values_by_mode: Dict[str, Dict[str, float]] = {}
+    finite_values: list[float] = []
+    for mode in (v3.MODE_TEW_FULL_GM, v3.MODE_TEW_FULL_AP_PA,
+                 v3.MODE_RAW_FULL_GM, v3.MODE_RAW_FULL_AP_PA):
+        values: Dict[str, float] = {}
+        for model in v3.MODEL_ORDER:
+            row = next(
+                (
+                    item
+                    for item in metrics_rows
+                    if item["rate_mode"] == mode and item["model"] == model
+                ),
+                None,
+            )
+            if row is not None and row["fit_status"] == "fitted":
+                value = float(row["activity_mare_percent"])
+                values[model] = value
+                finite_values.append(value)
+        values_by_mode[mode] = values
+
+    x_max = max(finite_values, default=10.0) * 1.18
+    y = np.arange(len(v3.MODEL_ORDER), dtype=float)
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=(14.5, 10.5),
+        sharex=True,
+        sharey=True,
+        facecolor="white",
+    )
+    flat_axes = np.asarray(axes, dtype=object).reshape(-1)
+    for panel_index, (axis, mode) in enumerate(zip(flat_axes, panel_modes)):
+        row_index, column_index = divmod(panel_index, 2)
+        axis.set_title(processing_labels[column_index], fontsize=17, pad=34)
+        axis.text(
+            0.5,
+            1.01,
+            row_labels[row_index],
+            transform=axis.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=14.5,
+            fontweight="bold",
+            color=row_colors[row_index],
+        )
+        values = values_by_mode[mode]
+        for model_index, model in enumerate(v3.MODEL_ORDER):
+            if model not in values:
+                continue
+            value = values[model]
+            axis.barh(
+                model_index,
+                value,
+                color=v3.MODEL_COLORS[model],
+                height=0.68,
+            )
+            axis.annotate(
+                f"{value:.1f} %",
+                (value, model_index),
+                xytext=(4, 0),
+                textcoords="offset points",
+                va="center",
+                ha="left",
+                fontsize=11.5,
+                fontweight="bold",
+            )
+        axis.set_xlim(0.0, x_max)
+        axis.set_xlabel("MARE sur l’activité (%)", fontsize=14)
+        axis.tick_params(axis="both", labelsize=12.5)
+        axis.grid(axis="x", linestyle="--", alpha=0.25)
+        axis.spines[["top", "right"]].set_visible(False)
+    for axis in np.asarray(axes, dtype=object)[:, 0]:
+        axis.set_yticks(
+            y,
+            [v3.MODEL_LABELS[model].split(" — ")[0] for model in v3.MODEL_ORDER],
+        )
+        axis.tick_params(labelleft=True)
+    flat_axes[0].invert_yaxis()
+    fig.suptitle(
+        "Performance des modèles avec sensibilité définie par les urines\n"
+        + subtitle,
+        fontsize=21,
+        y=0.985,
+    )
+    fig.text(
+        0.5,
+        0.018,
+        "Les lignes vides indiquent un modèle non estimable ou incompatible.",
+        ha="center",
+        va="bottom",
+        fontsize=12,
+    )
+    fig.subplots_adjust(
+        left=0.09,
+        right=0.98,
+        bottom=0.085,
+        top=0.82,
+        hspace=0.31,
+        wspace=0.18,
+    )
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
+
+
 def plot_primary_predictions(
     prediction_rows: Sequence[Mapping[str, Any]], output_path: Path
 ) -> Path:
@@ -1306,6 +2423,337 @@ def plot_observed_sensitivity(
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return output_path
+
+
+def build_complete_urine_methodology(
+    strict_training: Mapping[str, Any],
+    strict_test: Mapping[str, Any],
+    fitted_training: Mapping[str, Any],
+    fitted_test: Mapping[str, Any],
+    simple_results: Mapping[str, Mapping[str, Any]],
+    j0_summary_rows: Sequence[Mapping[str, Any]],
+    transfer_comparison_rows: Sequence[Mapping[str, Any]],
+    extended_j0_summary: Sequence[Mapping[str, Any]],
+) -> str:
+    """Create one chronological guide covering every urine-target analysis."""
+    lines = [
+        "MÉTHODOLOGIE COMPLÈTE — SENSIBILITÉ PLANAIRE ET URINES",
+        "=" * 62,
+        "",
+        "Portée",
+        "------",
+        "Ce module teste si une activité corporelle dérivée des urines peut servir",
+        "de cible à une quantification planaire sans CT ni Q/SPECT. L'urine est une",
+        "référence de rétention pancorporelle; toutes les mesures planaires utilisent",
+        "donc l'image complète. Un crop limité à la couverture Q/SPECT serait un",
+        "support spatial incompatible avec cette cible.",
+        "",
+        "Ordre des analyses",
+        "------------------",
+        "1. Contrôle des heures d'injection, d'imagerie et de collecte.",
+        "2. Construction de la cible principale avec les collectes terminées.",
+        "3. Calcul des six taux de comptage pleine image.",
+        "4. Test intrapatient: calibration à J0, prédiction des suivis.",
+        "5. Test interpatient: calibration P11, transfert verrouillé vers P8.",
+        "6. Analyse exploratoire M0-M9 avec variables spectrales planaires.",
+        "7. Extension exploratoire: fit continu des urines et cinq points P11.",
+        "",
+        "1. Cible principale: collectes terminées",
+        "-----------------------------------------",
+        "Chaque activité d'intervalle urine/couche est corrigée de la décroissance",
+        "physique jusqu'à l'injection. À l'heure t, seules les collectes déjà terminées",
+        "sont retranchées:",
+        "",
+        "  A_corps,step(t) = [A_injectee - somme(E_intervalle,0)] * 2^(-t/T_phys)",
+        "",
+        "Cette cible est mesurée par intervalles, mais elle présente des sauts et une",
+        "ambiguïté lorsqu'une acquisition survient juste avant une collecte.",
+        "",
+        "2. Mesures planaires",
+        "---------------------",
+        "Les six définitions principales sont photopeak, General Scatter et somme des",
+        "quatre fenêtres, chacune calculée par AP+PA ou par GM pixel. GM pixel signifie",
+        "somme_p sqrt(AP_p * PA_p_alignee). Les taux sont en cps.",
+        "",
+        "3. Sensibilité effective",
+        "-------------------------",
+        "",
+        "  S_eff,urine(t) = R_planaire(t) / A_corps,urine(t)",
+        "",
+        "Une sensibilité constante permet ensuite A_predite=R/S. Les modèles M1-M9",
+        "prédisent plutôt log(S_eff) à partir de ratios spectraux globaux, calculés",
+        "après intégration spatiale. La TEW et la GM demeurent pixel par pixel lorsque",
+        "le mode les demande.",
+        "",
+        "4. Analyse intrapatient principale",
+        "-----------------------------------",
+        "Pour chaque patient et chaque méthode:",
+        "",
+        "  S_J0 = R(J0)/A_corps(J0)",
+        "  A_predite(Ji) = R(Ji)/S_J0, i>0",
+        "",
+        "J0 est le seul point de calibration. J1/J2 ne sont jamais utilisés pour",
+        "réajuster S_J0.",
+        "",
+        " Patient | méthode                   | MARE suivi",
+        "------- | ------------------------- | -----------",
+    ]
+    for row in j0_summary_rows:
+        lines.append(
+            f"{str(row['patient_id']).upper():7s} | "
+            f"{str(row['method_label']):25s} | "
+            f"{float(row['followup_mare_percent']):11.2f}%"
+        )
+
+    lines.extend(
+        [
+            "",
+            "5. Transfert interpatient principal",
+            "-----------------------------------",
+            "Une droite à origine forcée R=kA est ajustée sur les trois points P11.",
+            "Le coefficient k est verrouillé, puis appliqué aux trois points P8.",
+            "",
+            " Méthode                  | MARE P8 | biais P8",
+            "------------------------- | ------- | --------",
+        ]
+    )
+    for method in SIMPLE_METHOD_ORDER:
+        result = simple_results[method]
+        lines.append(
+            f"{SIMPLE_METHOD_LABELS[method]:25s} | "
+            f"{float(result['activity_mare_percent']):7.2f}% | "
+            f"{float(result['activity_bias_percent']):+8.2f}%"
+        )
+
+    lines.extend(
+        [
+            "",
+            "6. Vérification interpatient dès J0",
+            "-----------------------------------",
+            "Le ratio ci-dessous vaut 100 % si P11 et P8 ont la même sensibilité",
+            "effective dès leur première acquisition.",
+            "",
+            " Méthode                  | step P8/P11 | fit P8/P11",
+            "------------------------- | ------------ | ----------",
+        ]
+    )
+    for method in SIMPLE_METHOD_ORDER:
+        strict_p11 = float(strict_training["simple_rates"][method][0]) / float(
+            strict_training["reference_activity"][0]
+        )
+        strict_p8 = float(strict_test["simple_rates"][method][0]) / float(
+            strict_test["reference_activity"][0]
+        )
+        fitted_p11 = float(fitted_training["simple_rates"][method][0]) / float(
+            fitted_training["reference_activity"][0]
+        )
+        fitted_p8 = float(fitted_test["simple_rates"][method][0]) / float(
+            fitted_test["reference_activity"][0]
+        )
+        lines.append(
+            f"{SIMPLE_METHOD_LABELS[method]:25s} | "
+            f"{100.0 * strict_p8 / strict_p11:12.2f}% | "
+            f"{100.0 * fitted_p8 / fitted_p11:10.2f}%"
+        )
+
+    lines.extend(
+        [
+            "",
+            "7. Extension exploratoire par fit urinaire",
+            "-------------------------------------------",
+            "Une bi-exponentielle cumulative contrainte à E(0)=0 est ajustée aux six",
+            "collectes. Elle fournit une cible continue aux heures d'imagerie. P11 J2",
+            "est 0.22 h après la dernière collecte; J3 et J6 sont extrapolés de 24.44 h",
+            "et 96.66 h. Ces points augmentent le nombre de lignes mais pas le nombre",
+            "de références urinaires indépendantes.",
+            "",
+            " Scénario                   | meilleur MARE simple P8",
+            "--------------------------- | ------------------------",
+        ]
+    )
+    for scenario in ("strict_3_to_3", "fitted_3_to_3", "fitted_5_to_3"):
+        candidates = [
+            row for row in transfer_comparison_rows if row["scenario"] == scenario
+        ]
+        best = min(candidates, key=lambda row: float(row["p8_mare_percent"]))
+        lines.append(
+            f"{str(best['scenario_label']):27s} | "
+            f"{float(best['p8_mare_percent']):24.2f}% "
+            f"({best['method_label']})"
+        )
+
+    p11_extended = [
+        row for row in extended_j0_summary if row["patient_id"] == "p11"
+    ]
+    if p11_extended:
+        best = min(
+            p11_extended,
+            key=lambda row: float(row["all_followup_mare_percent"]),
+        )
+        lines.extend(
+            [
+                "",
+                "Meilleur résultat intrapatient P11 étendu:",
+                f"  {best['method_label']}: MARE J1-J6 = "
+                f"{float(best['all_followup_mare_percent']):.2f} %, dont "
+                f"{float(best['extrapolated_followup_mare_percent']):.2f} % sur les "
+                "points extrapolés.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "Hiérarchie d'interprétation",
+            "---------------------------",
+            "PRINCIPAL: cible par collectes terminées, image complète, tests J0 et",
+            "transfert P11->P8. EXPLORATOIRE: M0-M9 et fit urinaire continu. Les",
+            "résultats extrapolés ne doivent jamais être présentés comme des mesures",
+            "indépendantes. Avec seulement deux patients, aucune généralisation n'est",
+            "démontrée.",
+            "",
+            "Guide des figures",
+            "------------------",
+            "sensitivity_results/strict_effective_sensitivity_vs_time.png",
+            "  Sensibilités absolues avec la cible principale.",
+            "sensitivity_results/fitted_effective_sensitivity_vs_time.png",
+            "  Sensibilités avec cible continue; marqueurs ouverts=extrapolation.",
+            "sensitivity_results/day0_patient_sensitivity_ratio.png",
+            "  Rapport de sensibilité P8/P11 dès J0.",
+            "sensitivity_results/strict_intrapatient_j0_mare.png",
+            "  Erreur après calibration séparée de chaque patient à J0.",
+            "sensitivity_results/fitted_normalized_sensitivity_vs_time.png",
+            "  Dérive temporelle relative à J0 avec les cinq points P11.",
+            "comparison_modes/urine_target_six_main_modes_model_mare.png",
+            "  M0-M9; crop exclu car incompatible avec une cible corps entier.",
+            "extended_fitted_excretion/",
+            "  Analyse secondaire complète du fit continu et de ses incertitudes.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def build_extended_excretion_report(
+    fitted_datasets: Sequence[Mapping[str, Any]],
+    comparison_rows: Sequence[Mapping[str, Any]],
+    j0_summary_rows: Sequence[Mapping[str, Any]],
+) -> str:
+    """Document the five-point exploratory target and its limitations."""
+    lines = [
+        "ANALYSE EXPLORATOIRE — CIBLE URINAIRE CONTINUE",
+        "=" * 57,
+        "",
+        "Objectif",
+        "--------",
+        "Utiliser les cinq acquisitions planaires de P11 sans prétendre que J3",
+        "et J6 sont de nouvelles mesures urinaires indépendantes.",
+        "",
+        "Méthode",
+        "-------",
+        "Les activités de chaque intervalle urine/couche sont ramenées à t=0.",
+        "Leur somme cumulative est ajustée par:",
+        "",
+        "  E0(t) = E_inf [f(1-exp(-k_fast t)) + (1-f)(1-exp(-k_slow t))]",
+        "",
+        "La cible corporelle au temps de l'imagerie est:",
+        "",
+        "  A_corps(t) = [A_injectee - E0(t)] * 2^(-t/T_physique)",
+        "",
+        "Le fit utilise uniquement les collectes urinaires; aucun compte planaire,",
+        "CT, ACCT ou Q/SPECT n'entre dans la construction de la cible.",
+        "Les intervalles bootstrap sont conditionnels à la forme bi-exponentielle",
+        "et ne couvrent ni l'erreur de modèle ni les voies d'excrétion non mesurées.",
+    ]
+    for dataset in fitted_datasets:
+        fit = dataset["excretion_fit"]
+        parameters = np.asarray(fit["parameters"], dtype=float)
+        lines.extend(
+            [
+                "",
+                dataset["spec"].label,
+                "-" * len(dataset["spec"].label),
+                f"Dernière collecte: {float(fit['last_collection_h']):.2f} h.",
+                f"E_inf = {parameters[0]:.2f} MBq; f = {parameters[1]:.6f}; "
+                f"k_fast = {parameters[2]:.8f} h^-1; "
+                f"k_slow = {parameters[3]:.8f} h^-1.",
+                f"RMSE aux collectes = {float(fit['rmse_mbq']):.2f} MBq; "
+                f"bootstrap réussi = {int(fit['bootstrap_successful_samples'])}/"
+                f"{int(fit['bootstrap_requested_samples'])}.",
+                "Borne E_inf=A_injectee atteinte: "
+                f"{bool(fit['asymptote_at_upper_bound'])}.",
+                "",
+                " Timepoint | temps h | cible MBq | IC bas | IC haut | statut | h après dernière collecte",
+                "---------- | ------- | --------- | ------ | ------- | ------ | --------------------------",
+            ]
+        )
+        for row in fitted_target_rows(dataset):
+            lines.append(
+                f"{str(row['timepoint']):10s} | "
+                f"{float(row['hours_after_injection']):7.2f} | "
+                f"{float(row['fitted_reference_activity_mbq']):9.2f} | "
+                f"{float(row['bootstrap_reference_lower_mbq']):6.2f} | "
+                f"{float(row['bootstrap_reference_upper_mbq']):7.2f} | "
+                f"{str(row['target_status']):12s} | "
+                f"{float(row['hours_after_last_collection']):26.2f}"
+            )
+
+    lines.extend(
+        [
+            "",
+            "Transfert P11 vers P8",
+            "----------------------",
+            " Méthode                  | strict 3->3 | fit 3->3 | fit 5->3",
+            "------------------------- | ----------- | --------- | --------",
+        ]
+    )
+    for method in SIMPLE_METHOD_ORDER:
+        values = {
+            str(row["scenario"]): float(row["p8_mare_percent"])
+            for row in comparison_rows
+            if row["method"] == method
+        }
+        lines.append(
+            f"{SIMPLE_METHOD_LABELS[method]:25s} | "
+            f"{values['strict_3_to_3']:11.2f}% | "
+            f"{values['fitted_3_to_3']:9.2f}% | "
+            f"{values['fitted_5_to_3']:8.2f}%"
+        )
+
+    p11_rows = [row for row in j0_summary_rows if row["patient_id"] == "p11"]
+    if p11_rows:
+        lines.extend(
+            [
+                "",
+                "Calibration P11 à J0, sans réajustement",
+                "----------------------------------------",
+                " Méthode                  | MARE J1-J6 | MARE interpolée | MARE extrapolée",
+                "------------------------- | ---------- | ---------------- | ----------------",
+            ]
+        )
+        for row in p11_rows:
+            lines.append(
+                f"{str(row['method_label']):25s} | "
+                f"{float(row['all_followup_mare_percent']):10.2f}% | "
+                f"{float(row['supported_followup_mare_percent']):16.2f}% | "
+                f"{float(row['extrapolated_followup_mare_percent']):16.2f}%"
+            )
+    lines.extend(
+        [
+            "",
+            "Interprétation",
+            "--------------",
+            "* Le scénario fit 3->3 mesure l'effet du nouvel alignement temporel.",
+            "* La différence entre fit 3->3 et fit 5->3 mesure l'apport des deux",
+            "  acquisitions P11 supplémentaires dans la calibration.",
+            "* J3 et J6 de P11 reposent sur l'extrapolation après la dernière collecte",
+            "  et doivent rester exploratoires, même si les erreurs apparentes sont faibles.",
+            "* Ajouter des cibles issues d'un même fit augmente le nombre de lignes",
+            "  d'entraînement, mais pas le nombre de références indépendantes.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def build_methodology_report(
@@ -1506,6 +2954,9 @@ def build_methodology_report(
             "* La cible suppose que les collectes urine/couches sont complètes et",
             "  correctement synchronisées. Les voies d'excrétion non mesurées et les",
             "  collectes futures ne sont pas incluses.",
+            "* Une analyse exploratoire séparée ajuste une courbe d'excrétion pour",
+            "  utiliser les cinq timepoints P11. J3 et J6 y sont explicitement",
+            "  identifiés comme extrapolés après la dernière collecte.",
             "* Cette référence est un bilan d'activité corporelle, pas une mesure",
             "  d'imagerie volumique. Elle répond directement à la rétention globale.",
             "* Le Q/SPECT demeure nécessaire plus tard pour comparer la précision des",
@@ -1526,17 +2977,43 @@ def run_urine_target_analysis(
     output_dir.mkdir(parents=True, exist_ok=True)
     interpatient_dir = output_dir / "interpatient_p11_to_p8"
     intrapatient_dir = output_dir / "intrapatient_j0_to_j1_j2"
+    extended_dir = output_dir / "extended_fitted_excretion"
+    extended_exploratory_dir = extended_dir / "exploratory_models"
+    comparison_modes_dir = output_dir / "comparison_modes"
+    extended_comparison_modes_dir = extended_dir / "comparison_modes"
+    sensitivity_results_dir = output_dir / "sensitivity_results"
     exploratory_dir = output_dir / "exploratory_models"
     timing_dir = output_dir / "qc_timing"
     for directory in (
         interpatient_dir,
         intrapatient_dir,
+        extended_dir,
+        extended_exploratory_dir,
+        comparison_modes_dir,
+        extended_comparison_modes_dir,
+        sensitivity_results_dir,
         exploratory_dir,
         timing_dir,
     ):
         directory.mkdir(parents=True, exist_ok=True)
     training_dataset = build_urine_dataset(TRAINING_DATASET, timepoint_count)
     test_dataset = build_urine_dataset(TEST_DATASET, timepoint_count)
+
+    # Exploratory continuous urine targets.  P11 receives all five planar
+    # acquisitions; P8 remains a three-timepoint held-out patient.  The fitted
+    # three-point P11 subset separates the effect of time alignment from the
+    # effect of adding J3 and J6 to training.
+    fitted_training_five = apply_fitted_excretion_target(
+        build_urine_dataset(TRAINING_DATASET, EXTENDED_P11_TIMEPOINT_COUNT),
+        random_seed=177,
+    )
+    fitted_training_three = subset_urine_dataset(
+        fitted_training_five, timepoint_count
+    )
+    fitted_test_three = apply_fitted_excretion_target(
+        test_dataset,
+        random_seed=178,
+    )
 
     metrics_rows: list[Dict[str, Any]] = []
     prediction_rows: list[Dict[str, Any]] = []
@@ -1552,8 +3029,21 @@ def run_urine_target_analysis(
         fits_by_mode[mode] = result["fits"]
 
     simple_results = simple_zero_origin_transfer(training_dataset, test_dataset)
+    fitted_three_simple_results = simple_zero_origin_transfer(
+        fitted_training_three, fitted_test_three
+    )
+    fitted_five_simple_results = simple_zero_origin_transfer(
+        fitted_training_five, fitted_test_three
+    )
+    transfer_comparison_rows = simple_transfer_comparison_rows(
+        simple_results,
+        fitted_three_simple_results,
+        fitted_five_simple_results,
+    )
     j0_training = j0_calibration_results(training_dataset)
     j0_test = j0_calibration_results(test_dataset)
+    extended_j0_training = j0_calibration_results(fitted_training_five)
+    extended_j0_test = j0_calibration_results(fitted_test_three)
     j0_prediction_rows: list[Dict[str, Any]] = []
     j0_summary_rows: list[Dict[str, Any]] = []
     for dataset, j0_results in (
@@ -1563,6 +3053,33 @@ def run_urine_target_analysis(
         predictions, summaries = j0_calibration_rows(dataset, j0_results)
         j0_prediction_rows.extend(predictions)
         j0_summary_rows.extend(summaries)
+
+    extended_j0_prediction_rows: list[Dict[str, Any]] = []
+    extended_j0_summary: list[Dict[str, Any]] = []
+    for dataset, results in (
+        (fitted_training_five, extended_j0_training),
+        (fitted_test_three, extended_j0_test),
+    ):
+        predictions, _summaries = j0_calibration_rows(dataset, results)
+        extended_j0_prediction_rows.extend(predictions)
+        extended_j0_summary.extend(extended_j0_summary_rows(dataset, results))
+
+    extended_metrics_rows: list[Dict[str, Any]] = []
+    extended_prediction_rows: list[Dict[str, Any]] = []
+    extended_fits_by_mode: Dict[str, Dict[str, Any]] = {}
+    for mode in MODE_ORDER:
+        result = fit_and_test_mode(
+            mode,
+            fitted_training_five["mode_observations"][mode],
+            fitted_test_three["mode_observations"][mode],
+        )
+        for row in result["metrics"]:
+            row["target_definition"] = "fitted_cumulative_excretion"
+        for row in result["predictions"]:
+            row["target_definition"] = "fitted_cumulative_excretion"
+        extended_metrics_rows.extend(result["metrics"])
+        extended_prediction_rows.extend(result["predictions"])
+        extended_fits_by_mode[mode] = result["fits"]
 
     simple_metrics_rows: list[Dict[str, Any]] = []
     simple_prediction_rows: list[Dict[str, Any]] = []
@@ -1605,6 +3122,36 @@ def run_urine_target_analysis(
                     ),
                     "activity_error_percent": float(
                         100.0 * (prediction[index] / reference[index] - 1.0)
+                    ),
+                }
+            )
+
+    fitted_five_prediction_rows: list[Dict[str, Any]] = []
+    fitted_reference = np.asarray(
+        fitted_test_three["reference_activity"], dtype=float
+    )
+    for method in SIMPLE_METHOD_ORDER:
+        result = fitted_five_simple_results[method]
+        prediction = np.asarray(
+            result["predicted_test_activity_mbq"], dtype=float
+        )
+        for index, record in enumerate(fitted_test_three["records"]):
+            fitted_five_prediction_rows.append(
+                {
+                    "method": method,
+                    "method_label": SIMPLE_METHOD_LABELS[method],
+                    "patient_id": fitted_test_three["spec"].patient_id,
+                    "cycle_id": fitted_test_three["spec"].cycle_id,
+                    "timepoint": record["timepoint"],
+                    "hours_after_injection": record["hours_after_injection"],
+                    "target_status": record["excretion_target_status"],
+                    "fitted_urine_reference_activity_mbq": float(
+                        fitted_reference[index]
+                    ),
+                    "predicted_activity_mbq": float(prediction[index]),
+                    "activity_error_percent": float(
+                        100.0
+                        * (prediction[index] / fitted_reference[index] - 1.0)
                     ),
                 }
             )
@@ -1676,6 +3223,36 @@ def run_urine_target_analysis(
             (training_dataset, test_dataset),
             intrapatient_dir / "normalized_sensitivity_vs_time.png",
         ),
+        "strict_absolute_sensitivity_figure": plot_simple_sensitivity_vs_time(
+            (training_dataset, test_dataset),
+            sensitivity_results_dir / "strict_effective_sensitivity_vs_time.png",
+            "Sensibilité effective avec la cible par collectes terminées",
+        ),
+        "fitted_absolute_sensitivity_figure": plot_simple_sensitivity_vs_time(
+            (fitted_training_five, fitted_test_three),
+            sensitivity_results_dir / "fitted_effective_sensitivity_vs_time.png",
+            "Sensibilité effective avec la cible urinaire continue — exploratoire",
+        ),
+        "day0_patient_sensitivity_ratio_figure": (
+            plot_day0_patient_sensitivity_ratio(
+                training_dataset,
+                test_dataset,
+                fitted_training_five,
+                fitted_test_three,
+                sensitivity_results_dir / "day0_patient_sensitivity_ratio.png",
+            )
+        ),
+        "strict_intrapatient_mare_figure": plot_primary_intrapatient_mare(
+            j0_summary_rows,
+            sensitivity_results_dir / "strict_intrapatient_j0_mare.png",
+        ),
+        "fitted_normalized_sensitivity_figure": (
+            plot_normalized_simple_sensitivity(
+                (fitted_training_five, fitted_test_three),
+                sensitivity_results_dir
+                / "fitted_normalized_sensitivity_vs_time.png",
+            )
+        ),
         "timing_csv": _write_csv(
             timing_dir / "imaging_urine_timing_qc.csv", timing_rows
         ),
@@ -1708,9 +3285,77 @@ def run_urine_target_analysis(
         "model_mare_figure": plot_mode_model_mare(
             metrics_rows, exploratory_dir / "urine_target_mode_model_mare.png"
         ),
+        "six_mode_urine_mare_figure": plot_urine_six_mode_primary_mare(
+            metrics_rows,
+            comparison_modes_dir / "urine_target_six_main_modes_model_mare.png",
+            "Cible principale par collectes terminées — P11 3 → P8 3",
+        ),
         "prediction_figure": plot_primary_predictions(
             prediction_rows,
             exploratory_dir / "urine_target_model_predictions.png",
+        ),
+        "extended_targets_csv": _write_csv(
+            extended_dir / "fitted_excretion_targets.csv",
+            fitted_target_rows(fitted_training_five)
+            + fitted_target_rows(fitted_test_three),
+        ),
+        "extended_target_figure": plot_fitted_excretion_targets(
+            (fitted_training_five, fitted_test_three),
+            extended_dir / "fitted_excretion_curves_and_targets.png",
+        ),
+        "extended_j0_predictions_csv": _write_csv(
+            extended_dir / "j0_to_all_predictions.csv",
+            extended_j0_prediction_rows,
+        ),
+        "extended_j0_summary_csv": _write_csv(
+            extended_dir / "j0_to_all_summary.csv",
+            extended_j0_summary,
+        ),
+        "extended_j0_figure": plot_extended_j0_predictions(
+            (
+                (fitted_training_five, extended_j0_training),
+                (fitted_test_three, extended_j0_test),
+            ),
+            extended_dir / "j0_to_all_predictions.png",
+        ),
+        "extended_transfer_comparison_csv": _write_csv(
+            extended_dir / "p11_to_p8_three_scenarios.csv",
+            transfer_comparison_rows,
+        ),
+        "extended_transfer_comparison_figure": plot_transfer_scenario_comparison(
+            transfer_comparison_rows,
+            extended_dir / "p11_to_p8_three_scenarios_mare.png",
+        ),
+        "extended_transfer_predictions_csv": _write_csv(
+            extended_dir / "p11_5point_to_p8_predictions.csv",
+            fitted_five_prediction_rows,
+        ),
+        "extended_transfer_parity_figure": plot_simple_prediction_parity(
+            fitted_test_three,
+            fitted_five_simple_results,
+            extended_dir / "p11_5point_to_p8_predictions.png",
+        ),
+        "extended_model_metrics_csv": _write_csv(
+            extended_exploratory_dir / "model_metrics.csv",
+            extended_metrics_rows,
+        ),
+        "extended_model_predictions_csv": _write_csv(
+            extended_exploratory_dir / "model_predictions.csv",
+            extended_prediction_rows,
+        ),
+        "extended_model_mare_figure": plot_mode_model_mare(
+            extended_metrics_rows,
+            extended_exploratory_dir / "mode_model_mare.png",
+        ),
+        "extended_six_mode_urine_mare_figure": plot_urine_six_mode_primary_mare(
+            extended_metrics_rows,
+            extended_comparison_modes_dir
+            / "fitted_urine_target_six_main_modes_model_mare.png",
+            "Cible urinaire ajustée — entraînement P11 5, test P8 3",
+        ),
+        "extended_model_predictions_figure": plot_primary_predictions(
+            extended_prediction_rows,
+            extended_exploratory_dir / "model_predictions.png",
         ),
     }
     methodology_path = output_dir / "urine_target_methodology_and_results.txt"
@@ -1725,10 +3370,44 @@ def run_urine_target_analysis(
         encoding="utf-8",
     )
     paths["methodology_report"] = methodology_path
+    extended_report_path = extended_dir / "methodology_and_results.txt"
+    extended_report_path.write_text(
+        build_extended_excretion_report(
+            (fitted_training_five, fitted_test_three),
+            transfer_comparison_rows,
+            extended_j0_summary,
+        ),
+        encoding="utf-8",
+    )
+    paths["extended_report"] = extended_report_path
+    complete_methodology_path = output_dir / "complete_methodology_and_results.txt"
+    complete_methodology_path.write_text(
+        build_complete_urine_methodology(
+            training_dataset,
+            test_dataset,
+            fitted_training_five,
+            fitted_test_three,
+            simple_results,
+            j0_summary_rows,
+            transfer_comparison_rows,
+            extended_j0_summary,
+        ),
+        encoding="utf-8",
+    )
+    paths["complete_methodology_report"] = complete_methodology_path
     return {
         "training_dataset": training_dataset,
         "test_dataset": test_dataset,
         "simple_results": simple_results,
+        "fitted_three_simple_results": fitted_three_simple_results,
+        "fitted_five_simple_results": fitted_five_simple_results,
+        "fitted_training_five": fitted_training_five,
+        "fitted_test_three": fitted_test_three,
+        "transfer_comparison": transfer_comparison_rows,
+        "extended_j0_summaries": extended_j0_summary,
+        "extended_fits_by_mode": extended_fits_by_mode,
+        "extended_metrics": extended_metrics_rows,
+        "extended_predictions": extended_prediction_rows,
         "j0_training": j0_training,
         "j0_test": j0_test,
         "j0_summaries": j0_summary_rows,

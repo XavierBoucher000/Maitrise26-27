@@ -16,6 +16,8 @@ DETECTOR_LONGITUDINAL_FOV_MM = 387.0
 APPLY_DEAD_TIME_CORRECTION = True
 DEAD_TIME_TAU_US = 0.632
 DEAD_TIME_WIDE_WINDOW_ENERGIES = ["Low Energy Scatter", "Lower Scatter", "Photopeak", "Upper Scatter"]
+DEAD_TIME_WIDE_WINDOW_LABEL = "4W (55-250 keV)"
+DEAD_TIME_MAX_CALIBRATED_RWO_CPS = 355_034.0
 ALIGN_PA_TO_AP = True
 
 
@@ -170,6 +172,11 @@ def apply_tew_correction(geometric_images: List[Dict[str, Any]]) -> Dict[str, An
 
 
 def wide_spectrum_counts(geometric_images: List[Dict[str, Any]]) -> float:
+    """Return the legacy wide-window total from AP/PA geometric-mean images.
+
+    This is an image-analysis quantity, not the acquisition ``RWo`` used for
+    dead-time correction.  ``RWo`` must be derived from raw detector counts.
+    """
     counts = c3.extract_counts_from_images(geometric_images)
     available = [
         counts[energy]
@@ -181,25 +188,106 @@ def wide_spectrum_counts(geometric_images: List[Dict[str, Any]]) -> float:
     return float(sum(available))
 
 
+def wide_spectrum_counts_by_view(
+    images: List[Dict[str, Any]],
+) -> Dict[str, float]:
+    """Return raw 4-window counts separately for the AP and PA detectors."""
+    groups = group_ap_pa_by_energy(images)
+    counts_by_view: Dict[str, float] = {}
+    for view in ("AP", "PA"):
+        missing = [
+            energy
+            for energy in DEAD_TIME_WIDE_WINDOW_ENERGIES
+            if view not in groups.get(energy, {})
+        ]
+        if missing:
+            raise ValueError(
+                f"Missing {view} dead-time monitoring window(s): {', '.join(missing)}"
+            )
+        counts_by_view[view] = float(
+            sum(
+                float(groups[energy][view]["pixel_sum"])
+                for energy in DEAD_TIME_WIDE_WINDOW_ENERGIES
+            )
+        )
+    return counts_by_view
+
+
+def average_wide_spectrum_rate(
+    images: List[Dict[str, Any]],
+    duration_seconds: float,
+) -> tuple[float, Dict[str, float], Dict[str, float]]:
+    """Return acquisition-average ``RWo`` and its AP/PA components.
+
+    Following Frezza et al. and Desy et al., ``RWo`` is an acquisition count
+    rate measured before scatter correction.  For a dual-head planar scan, the
+    acquisition-average rate is the arithmetic mean of the two detector rates,
+    not a geometric mean of AP and PA images.
+    """
+    if duration_seconds <= 0:
+        raise ValueError("duration_seconds must be positive")
+    counts_by_view = wide_spectrum_counts_by_view(images)
+    rates_by_view = {
+        view: counts / float(duration_seconds)
+        for view, counts in counts_by_view.items()
+    }
+    average_rate = float(np.mean(list(rates_by_view.values())))
+    return average_rate, counts_by_view, rates_by_view
+
+
 def apply_dead_time_to_tew_correction(
     geometric_images: List[Dict[str, Any]],
     correction: Dict[str, Any],
     duration_seconds: float,
     tau_us: float = DEAD_TIME_TAU_US,
+    raw_images: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Apply Frezza paralyzable dead-time correction to TEW-corrected primary counts."""
+    """Apply a global acquisition DTCF to TEW-corrected primary counts.
+
+    The preferred path derives ``RWo`` from the arithmetic mean of the raw AP
+    and PA detector rates in the four monitoring windows (55-250 keV).  A
+    single scalar DTCF is then applied uniformly to the complete primary image,
+    analogous to the per-volume method of Desy et al.  ``raw_images=None`` is
+    retained only for backwards compatibility and uses the historical,
+    geometric-mean-derived estimate.
+    """
     if not APPLY_DEAD_TIME_CORRECTION:
         return correction
 
     rpo_cps = float(correction["corrected_counts_before_dead_time"]) / duration_seconds
-    rwo_counts = wide_spectrum_counts(geometric_images)
-    rwo_cps = rwo_counts / duration_seconds
+    rwo_counts_by_view: Dict[str, float] | None = None
+    rwo_cps_by_view: Dict[str, float] | None = None
+    per_view_dtcf: Dict[str, float] | None = None
+    effective_per_view_dtcf: float | None = None
+    if raw_images is None:
+        rwo_counts = wide_spectrum_counts(geometric_images)
+        rwo_cps = rwo_counts / duration_seconds
+        rwo_definition = "legacy geometric-mean 4W rate"
+    else:
+        rwo_cps, rwo_counts_by_view, rwo_cps_by_view = average_wide_spectrum_rate(
+            raw_images,
+            duration_seconds,
+        )
+        rwo_counts = float(np.mean(list(rwo_counts_by_view.values())))
+        rwo_definition = "arithmetic mean of raw AP/PA 4W detector rates"
+        per_view_dtcf = {
+            view: dead_time.dead_time_correction_factor(
+                rate,
+                tau_us,
+                max_calibrated_rwo_cps=DEAD_TIME_MAX_CALIBRATED_RWO_CPS,
+            )[0]
+            for view, rate in rwo_cps_by_view.items()
+        }
+        effective_per_view_dtcf = float(
+            np.sqrt(per_view_dtcf["AP"] * per_view_dtcf["PA"])
+        )
     result = dead_time.correct_dead_time(
         rpo_cps=rpo_cps,
         rwo_cps=rwo_cps,
         tau_us=tau_us,
         calibration_factor_cps_per_mbq=CAMERA_SENSITIVITY_CPS_PER_MBQ,
         image_primary=correction["corrected_image"]["image"],
+        max_calibrated_rwo_cps=DEAD_TIME_MAX_CALIBRATED_RWO_CPS,
     )
 
     corrected_image = correction["corrected_image"].copy()
@@ -217,6 +305,17 @@ def apply_dead_time_to_tew_correction(
         "rpt_corrected_cps": result.rpt_corrected_cps,
         "rwo_counts": rwo_counts,
         "rwo_cps": rwo_cps,
+        "rwo_counts_by_view": rwo_counts_by_view,
+        "rwo_cps_by_view": rwo_cps_by_view,
+        "rwo_definition": rwo_definition,
+        "wide_window_label": DEAD_TIME_WIDE_WINDOW_LABEL,
+        "per_view_dtcf": per_view_dtcf,
+        "effective_per_view_dtcf": effective_per_view_dtcf,
+        "global_vs_per_view_dtcf_percent": (
+            None
+            if effective_per_view_dtcf is None
+            else 100.0 * (result.dtcf / effective_per_view_dtcf - 1.0)
+        ),
         "tau_us": tau_us,
         "count_loss_fraction": result.count_loss_fraction,
         "count_loss_percent": result.count_loss_percent,
@@ -337,7 +436,12 @@ def run_planar_workflow(scan_dir: Path) -> None:
 
     correction = apply_tew_correction(geometric_images)
     duration_seconds = acquisition_duration_seconds(images)
-    correction = apply_dead_time_to_tew_correction(geometric_images, correction, duration_seconds)
+    correction = apply_dead_time_to_tew_correction(
+        geometric_images,
+        correction,
+        duration_seconds,
+        raw_images=images,
+    )
     print(f"TEW scatter estimate: {correction['scatter_counts']:.1f}")
     print(f"TEW corrected photopeak before dead time: {correction['corrected_counts_before_dead_time']:.1f}")
     print(f"TEW corrected photopeak after dead time: {correction['corrected_counts']:.1f}")
@@ -361,7 +465,10 @@ def run_planar_study_workflow(study_dir: Path) -> None:
     if not scan_dirs:
         raise ValueError(f"No planar DICOM scan folders found in {study_dir}")
 
-    patient_scans = dicom_loader.load_patient_scans(study_dir)
+    patient_scans = dicom_loader.load_patient_scans(
+        study_dir,
+        series_description_filter="WB RAPIDE",
+    )
     print(f"Loaded {len(patient_scans['scans'])} planar acquisition(s) from {study_dir.name}")
 
     for scan in patient_scans["scans"]:
@@ -384,7 +491,12 @@ def run_planar_study_workflow(study_dir: Path) -> None:
         try:
             correction = apply_tew_correction(geometric_images)
             duration_seconds = acquisition_duration_seconds(images)
-            correction = apply_dead_time_to_tew_correction(geometric_images, correction, duration_seconds)
+            correction = apply_dead_time_to_tew_correction(
+                geometric_images,
+                correction,
+                duration_seconds,
+                raw_images=images,
+            )
         except ValueError as exc:
             print(f"  TEW correction skipped: {exc}")
             continue
@@ -419,7 +531,10 @@ def planar_tew_decay_data(
     This is the numeric API used by comparison scripts. It keeps planar loading,
     geometric mean, and TEW correction inside this module.
     """
-    patient_scans = dicom_loader.load_patient_scans(study_dir)
+    patient_scans = dicom_loader.load_patient_scans(
+        study_dir,
+        series_description_filter="WB RAPIDE",
+    )
     rows = []
     for scan in patient_scans["scans"]:
         images = scan["images"]
@@ -432,7 +547,12 @@ def planar_tew_decay_data(
         correction = apply_tew_correction(geometric_images)
         timing = planar_timing_from_dicom(images)
         duration_seconds = timing.actual_frame_duration_s
-        correction = apply_dead_time_to_tew_correction(geometric_images, correction, duration_seconds)
+        correction = apply_dead_time_to_tew_correction(
+            geometric_images,
+            correction,
+            duration_seconds,
+            raw_images=images,
+        )
         total_window_counts = wide_spectrum_counts(geometric_images)
         dead_time_info = correction["dead_time"] or {}
         dead_time_dtcf = dead_time_info.get("dtcf", 1.0)
@@ -486,6 +606,16 @@ def planar_tew_decay_data(
                 "dead_time_loss_percent": dead_time_info.get("count_loss_percent", 0.0),
                 "wide_spectrum_counts": dead_time_info.get("rwo_counts"),
                 "wide_spectrum_cps": dead_time_info.get("rwo_cps"),
+                "wide_spectrum_counts_by_view": dead_time_info.get("rwo_counts_by_view"),
+                "wide_spectrum_cps_by_view": dead_time_info.get("rwo_cps_by_view"),
+                "wide_spectrum_definition": dead_time_info.get("rwo_definition"),
+                "dead_time_per_view_dtcf": dead_time_info.get("per_view_dtcf"),
+                "dead_time_effective_per_view_dtcf": dead_time_info.get(
+                    "effective_per_view_dtcf"
+                ),
+                "dead_time_global_vs_per_view_dtcf_percent": dead_time_info.get(
+                    "global_vs_per_view_dtcf_percent"
+                ),
             }
         )
 
@@ -504,7 +634,7 @@ def default_planar_study_dir() -> Path:
         Path(__file__).resolve().parent
         / "Data"
         / "p11"
-        / "2026-05__Studies_WBP"
+        / "2026-05__Studies"
     )
 
 
@@ -513,6 +643,6 @@ def default_rapid_scan_dir() -> Path:
         Path(__file__).resolve().parent
         / "Data"
         / "p11"
-        / "2026-05__Studies_WBP"
-        / "DOE^JOHN_ANON64926_NM_2026-05-21_082240_MN.LU177.POST.TRAITEMENT-EN_WB.RAPIDE_n8__00000"
+        / "2026-05__Studies"
+        / "2.16.840_402.6447_NM_2026-05-21_082240_MN.LU177.POST.TRAITEMENT-EN_WB.RAPIDE_n8__00000"
     )

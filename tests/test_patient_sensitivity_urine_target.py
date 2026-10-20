@@ -109,6 +109,79 @@ def test_urine_timing_scenarios_bracket_linear_interpolation():
     assert completed[-1] == interval_complete[-1]
 
 
+def test_fitted_excretion_target_marks_only_times_after_last_collection():
+    collection_times = np.array([2.0, 4.0, 12.0, 24.0, 36.0, 48.0])
+    parameters = np.array([850.0, 0.7, 0.12, 0.008])
+    cumulative = urine.cumulative_excretion_biexponential(
+        collection_times, *parameters
+    )
+    fit = urine.fit_cumulative_excretion_target(
+        np.array([1.0, 24.0, 72.0]),
+        {"injected_activity_mbq": 1000.0, "half_life_h": 160.0},
+        {
+            "times_h": collection_times,
+            "cumulative_injection_equivalent_mbq": cumulative,
+        },
+        bootstrap_samples=0,
+    )
+    assert fit["rmse_mbq"] < 1e-4
+    assert fit["is_extrapolated"].tolist() == [False, False, True]
+    assert np.all(fit["reference_activity_mbq"] > 0.0)
+    assert fit["hours_after_last_collection"].tolist() == [0.0, 0.0, 24.0]
+
+
+def test_apply_fitted_target_and_subset_update_every_model_target():
+    collection_times = np.array([2.0, 4.0, 12.0, 24.0, 36.0, 48.0])
+    cumulative = urine.cumulative_excretion_biexponential(
+        collection_times, 850.0, 0.7, 0.12, 0.008
+    )
+    records = [
+        {
+            "timepoint": label,
+            "hours_after_injection": time_h,
+            "urine_remaining_activity_mbq": activity,
+        }
+        for label, time_h, activity in (
+            ("J0", 1.0, 990.0),
+            ("J1", 24.0, 500.0),
+            ("J3", 72.0, 250.0),
+        )
+    ]
+    modes = {mode: _observation() for mode in urine.MODE_ORDER}
+    dataset = {
+        "spec": urine.TRAINING_DATASET,
+        "records": records,
+        "reference_activity": np.array([990.0, 500.0, 250.0]),
+        "mode_observations": modes,
+        "simple_rates": {
+            name: np.array([100.0, 80.0, 60.0])
+            for name in urine.SIMPLE_METHOD_ORDER
+        },
+        "urine_data": {
+            "injected_activity_mbq": 1000.0,
+            "half_life_h": 160.0,
+        },
+        "urine_balance": {
+            "times_h": collection_times,
+            "cumulative_injection_equivalent_mbq": cumulative,
+        },
+        "timing_scenarios": {"example": np.array([1.0, 2.0, 3.0])},
+    }
+    fitted = urine.apply_fitted_excretion_target(
+        dataset, bootstrap_samples=0
+    )
+    assert fitted["records"][-1]["excretion_target_status"] == "extrapolated"
+    for mode in urine.MODE_ORDER:
+        observation = fitted["mode_observations"][mode]
+        assert np.allclose(
+            observation["target_sensitivity"],
+            observation["measurement_rate"] / fitted["reference_activity"],
+        )
+    subset = urine.subset_urine_dataset(fitted, 2)
+    assert len(subset["records"]) == 2
+    assert subset["excretion_fit"]["is_extrapolated"].tolist() == [False, False]
+
+
 def test_sensitivity_stability_is_reported_separately_by_dataset_and_mode():
     training_modes = {mode: _observation() for mode in urine.MODE_ORDER}
     test_modes = {mode: _observation(1.1) for mode in urine.MODE_ORDER}

@@ -10,6 +10,7 @@ def test_organized_output_dir_uses_script_patient_cycle_hierarchy():
     assert output == (
         feature_test.PROJECT_DIR
         / "fig"
+        / "models"
         / "patient_sensitivity_feature_test_v2"
         / "p8"
         / "2026-06__Studies"
