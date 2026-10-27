@@ -56,7 +56,33 @@ def find_qspect_series_dirs(root_dir: Path) -> List[Path]:
         if is_qspect_series_dir(series_dir)
     ]
     unique, _duplicates = dicom_series_dedup.deduplicate_series_dirs(candidates)
-    return unique
+    # One export can contain more than one reconstruction carrying the same
+    # Day label (for example, the P11 Day2 volumes with 225 and 233 slices).
+    # A quantitative timepoint must occur only once in the model.  Retain the
+    # complete reconstruction with the greatest longitudinal coverage and keep
+    # the choice deterministic when two candidates have the same size.
+    by_timepoint: Dict[str, List[Path]] = {}
+    for series_dir in unique:
+        first_file = next(series_dir.glob("*.dcm"), None)
+        if first_file is None:
+            continue
+        ds = pydicom.dcmread(first_file, stop_before_pixels=True, force=True)
+        description = str(getattr(ds, "SeriesDescription", series_dir.name))
+        label = day_label(description, len(by_timepoint)).lower()
+        by_timepoint.setdefault(label, []).append(series_dir)
+
+    selected = []
+    for label in sorted(by_timepoint):
+        options = by_timepoint[label]
+
+        def selection_key(series_dir: Path) -> tuple:
+            actual = len(list(series_dir.glob("*.dcm")))
+            expected = expected_series_file_count(series_dir)
+            complete = expected is None or actual == expected
+            return (int(complete), actual, series_dir.name)
+
+        selected.append(max(options, key=selection_key))
+    return selected
 
 
 def parse_dicom_datetime(study_date: Any, acquisition_time: Any) -> Optional[datetime]:

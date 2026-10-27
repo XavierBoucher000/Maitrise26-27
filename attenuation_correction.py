@@ -560,6 +560,26 @@ def sorted_planar_scans(study_dir: Path) -> List[Dict[str, Any]]:
         and str(scan["images"][0].get("series_description", "")).strip().upper()
         == "WB RAPIDE"
     ]
+    # Some exports retain a short local repeat under the same WB RAPIDE
+    # description.  Keep acquisitions whose ScanLength is at least 80% of the
+    # longest acquisition in the cycle.  This retains the standard 2000-mm WB
+    # scans and rejects the 390-mm P11 July local acquisition.
+    scan_lengths = []
+    for scan in scans:
+        lengths = [
+            float(image["scan_length"])
+            for image in scan["images"]
+            if image.get("scan_length") not in (None, "")
+        ]
+        scan_lengths.append(None if not lengths else float(np.median(lengths)))
+    known_lengths = [value for value in scan_lengths if value is not None]
+    if scans and len(known_lengths) == len(scans):
+        minimum_wb_length = 0.8 * max(known_lengths)
+        scans = [
+            scan
+            for scan, scan_length in zip(scans, scan_lengths)
+            if scan_length is not None and scan_length >= minimum_wb_length
+        ]
     scans.sort(key=lambda scan: (dicom_loader.scan_datetime(scan) is None, dicom_loader.scan_datetime(scan), scan["scan_name"]))
     return scans
 

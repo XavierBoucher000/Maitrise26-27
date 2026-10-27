@@ -206,7 +206,11 @@ def wide_spectrum_counts_by_view(
             )
         counts_by_view[view] = float(
             sum(
-                float(groups[energy][view]["pixel_sum"])
+                float(
+                    groups[energy][view]["pixel_sum"]
+                    if "pixel_sum" in groups[energy][view]
+                    else np.sum(groups[energy][view]["image"])
+                )
                 for energy in DEAD_TIME_WIDE_WINDOW_ENERGIES
             )
         )

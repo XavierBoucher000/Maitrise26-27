@@ -47,5 +47,6 @@ MANIFEST
 
 # OS
 .DS_Store
+PWP/~$*.pptx
 .env
 .venv

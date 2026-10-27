@@ -52,21 +52,23 @@ CYCLE_DATASETS = {
         "patient_label": "P11 — cycle de mai",
         "figure_patient": "p11",
         "figure_cycle": "2026-05__Studies",
-        "planar_dir": PROJECT_DIR / "Data/p11/2026-05__Studies_WBP",
+        # Current exports contain WB.RAPIDE and Q/SPECT in the same cycle
+        # directory. The DICOM loader filters by SeriesDescription.
+        "planar_dir": PROJECT_DIR / "Data/p11/2026-05__Studies",
         "qspect_dir": PROJECT_DIR / "Data/p11/2026-05__Studies",
     },
     ("p11", "2026-07__Studies"): {
         "patient_label": "P11 — cycle de juillet",
         "figure_patient": "p11",
         "figure_cycle": "2026-07__Studies",
-        "planar_dir": PROJECT_DIR / "Data/p11/2026-07__Studies_WBP",
+        "planar_dir": PROJECT_DIR / "Data/p11/2026-07__Studies",
         "qspect_dir": PROJECT_DIR / "Data/p11/2026-07__Studies",
     },
     ("p8", "2026-06__Studies"): {
         "patient_label": "P8 — cycle de juin",
         "figure_patient": "p8",
         "figure_cycle": "2026-06__Studies",
-        "planar_dir": PROJECT_DIR / "Data/p8/2026-06__Studies_WBP",
+        "planar_dir": PROJECT_DIR / "Data/p8/2026-06__Studies",
         "qspect_dir": PROJECT_DIR / "Data/p8/2026-06__Studies",
     },
 }

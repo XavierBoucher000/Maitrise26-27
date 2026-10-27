@@ -100,6 +100,46 @@ def test_two_predictor_model_is_fitted_when_two_cycles_are_pooled():
     assert fit["rank"] == 3
 
 
+def test_origin_slope_baseline_uses_training_activity_and_rate():
+    observations = _synthetic_observations()
+    training = v3._combine_observations(
+        observations, ("p11_may", "p11_july")
+    )
+    fit = v3.fit_model(v3.MODEL_ORIGIN_SLOPE, training)
+    activity = np.asarray(training["reference_activity"])
+    rate = np.asarray(training["measurement_rate"])
+    expected = float(np.dot(activity, rate) / np.dot(activity, activity))
+    assert fit["status"] == "fitted"
+    assert fit["coefficients"][0] == pytest.approx(expected)
+
+
+def test_personalized_j0_is_scored_only_on_later_test_points():
+    observations = _synthetic_observations()
+    result = v3.fit_and_evaluate(
+        ("p11_may", "p11_july"),
+        ("p8_june",),
+        observations,
+        include_j0_personalized=True,
+    )
+    metrics = [
+        row
+        for row in result["metrics"]
+        if row["model"] == v3.MODEL_J0_PERSONALIZED
+        and row["metric_scope"] == "post_j0_test_dataset"
+    ]
+    assert len(metrics) == 1
+    assert metrics[0]["prediction_count"] == 2
+    predictions = [
+        row
+        for row in result["predictions"]
+        if row["model"] == v3.MODEL_J0_PERSONALIZED
+    ]
+    assert len(predictions) == 3
+    assert predictions[0]["used_for_j0_calibration"] is True
+    assert predictions[0]["included_in_post_j0_metric"] is False
+    assert all(row["included_in_post_j0_metric"] for row in predictions[1:])
+
+
 def test_raw_full_image_features_match_simple_ap_pa_sums():
     values = {
         "Lower Scatter": (10.0, 20.0),

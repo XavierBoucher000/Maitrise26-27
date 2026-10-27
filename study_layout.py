@@ -9,6 +9,8 @@ from typing import Dict, List, NamedTuple, Optional
 import pydicom
 
 import dicom_series_dedup
+import figure_layout
+import qspect_processing
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -48,7 +50,12 @@ def discover_cycles(data_dir: Path = DATA_DIR) -> List[CycleDataset]:
                     ),
                 )
             )
-    return cycles
+    return sorted(
+        cycles,
+        key=lambda item: figure_layout.patient_cycle_sort_key(
+            item.patient, item.cycle
+        ),
+    )
 
 
 def _first_dicom(series_dir: Path) -> Optional[Path]:
@@ -69,28 +76,32 @@ def cycle_inventory(dataset: CycleDataset) -> Dict[str, object]:
                 continue
             ds = pydicom.dcmread(dicom_path, stop_before_pixels=True, force=True)
             if str(getattr(ds, "SeriesDescription", "")).strip().upper() == "WB RAPIDE":
-                planar_candidates.append(series_dir)
+                scan_length = getattr(ds, "ScanLength", None)
+                try:
+                    scan_length = float(scan_length)
+                except (TypeError, ValueError):
+                    scan_length = None
+                planar_candidates.append((series_dir, scan_length))
         planar_unique, _planar_duplicates = (
-            dicom_series_dedup.deduplicate_series_dirs(planar_candidates)
+            dicom_series_dedup.deduplicate_series_dirs(
+                [series_dir for series_dir, _scan_length in planar_candidates]
+            )
         )
+        length_by_dir = dict(planar_candidates)
+        unique_lengths = [length_by_dir.get(series_dir) for series_dir in planar_unique]
+        known_lengths = [value for value in unique_lengths if value is not None]
+        if planar_unique and len(known_lengths) == len(planar_unique):
+            minimum_wb_length = 0.8 * max(known_lengths)
+            planar_unique = [
+                series_dir
+                for series_dir in planar_unique
+                if length_by_dir[series_dir] >= minimum_wb_length
+            ]
         planar_count = len(planar_unique)
 
     if dataset.qspect_dir.exists():
-        qspect_candidates = []
-        for series_dir in dataset.qspect_dir.iterdir():
-            dicom_path = _first_dicom(series_dir) if series_dir.is_dir() else None
-            if dicom_path is None:
-                continue
-            ds = pydicom.dcmread(dicom_path, stop_before_pixels=True, force=True)
-            description = str(getattr(ds, "SeriesDescription", "")).strip()
-            modality = str(getattr(ds, "Modality", "")).strip()
-            if modality != "PT" or re.fullmatch(
-                r"WB\s+QSPECT\s+Day\d+", description, re.IGNORECASE
-            ) is None:
-                continue
-            qspect_candidates.append(series_dir)
-        qspect_unique, _qspect_duplicates = (
-            dicom_series_dedup.deduplicate_series_dirs(qspect_candidates)
+        qspect_unique = qspect_processing.find_qspect_series_dirs(
+            dataset.qspect_dir
         )
         for series_dir in qspect_unique:
             dicom_path = _first_dicom(series_dir)

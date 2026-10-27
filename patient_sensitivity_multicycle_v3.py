@@ -34,6 +34,7 @@ import numpy as np
 
 import attenuation_correction as ac
 import attenuation_global_model_v2 as spectral_model
+import dead_time
 import figure_layout
 import patient_effective_sensitivity as sensitivity
 import patient_sensitivity_feature_test_v2 as v2
@@ -82,6 +83,8 @@ FEATURE_LABELS = {
 }
 
 MODEL_CONSTANT = "M0_constant"
+MODEL_ORIGIN_SLOPE = "M0b_origin_slope"
+MODEL_J0_PERSONALIZED = "J0_personalized"
 MODEL_LOCKED = "M1_locked_spectral"
 MODEL_ASYMMETRY = "M2_spectral_plus_ap_pa"
 MODEL_ADJACENT = "M4_adjacent_scatter"
@@ -92,6 +95,7 @@ MODEL_UPPER = "M8_upper_scatter"
 MODEL_RAW_ASYMMETRY = "M9_raw_ratio_plus_all_ap_pa"
 MODEL_ORDER = (
     MODEL_CONSTANT,
+    MODEL_ORIGIN_SLOPE,
     MODEL_LOCKED,
     MODEL_ASYMMETRY,
     MODEL_ADJACENT,
@@ -103,6 +107,8 @@ MODEL_ORDER = (
 )
 MODEL_LABELS = {
     MODEL_CONSTANT: "M0 — sensibilité constante",
+    MODEL_ORIGIN_SLOPE: "M0b — pente comptes–activité à l’origine",
+    MODEL_J0_PERSONALIZED: "J0 — sensibilité personnalisée au premier point",
     MODEL_LOCKED: "M1 — ratio spectral verrouillé",
     MODEL_ASYMMETRY: "M2 — ratio spectral + asymétrie AP/PA",
     MODEL_ADJACENT: "M4 — diffusé adjacent/photopeak",
@@ -114,6 +120,8 @@ MODEL_LABELS = {
 }
 MODEL_COLORS = {
     MODEL_CONSTANT: "#7A7A7A",
+    MODEL_ORIGIN_SLOPE: "#4D4D4D",
+    MODEL_J0_PERSONALIZED: "#005A9C",
     MODEL_LOCKED: "#2E9F55",
     MODEL_ASYMMETRY: "#8C6BB1",
     MODEL_ADJACENT: "#FF7F0E",
@@ -125,6 +133,8 @@ MODEL_COLORS = {
 }
 MODEL_MARKERS = {
     MODEL_CONSTANT: "o",
+    MODEL_ORIGIN_SLOPE: "^",
+    MODEL_J0_PERSONALIZED: "*",
     MODEL_LOCKED: "D",
     MODEL_ASYMMETRY: "s",
     MODEL_ADJACENT: "v",
@@ -137,6 +147,7 @@ MODEL_MARKERS = {
 
 PRIMARY_PLOT_MODELS = (
     MODEL_CONSTANT,
+    MODEL_ORIGIN_SLOPE,
     MODEL_LOCKED,
     MODEL_ASYMMETRY,
     MODEL_ADJACENT,
@@ -145,6 +156,21 @@ PRIMARY_PLOT_MODELS = (
     MODEL_UPPER,
     MODEL_RAW_ASYMMETRY,
 )
+
+# Labels kept deliberately compact for the presentation-oriented summaries.
+# The complete definitions remain available in v3_modeles_M0_M9_methodologie.txt.
+PRESENTATION_MODEL_LABELS = {
+    MODEL_CONSTANT: "M0 — sensibilité moyenne",
+    MODEL_ORIGIN_SLOPE: "M0b — pente à l'origine",
+    MODEL_LOCKED: "M1 — ratio General/photopeak",
+    MODEL_ASYMMETRY: "M2 — M1 + asymétrie AP/PA",
+    MODEL_ADJACENT: "M4 — diffusé adjacent/photopeak",
+    MODEL_TEW_FRACTION: "M5 — fraction conservée après TEW",
+    MODEL_PHOTO_ALL: "M6 — fraction photopeak/4 fenêtres",
+    MODEL_LOWER: "M7 — fenêtre inférieure/photopeak",
+    MODEL_UPPER: "M8 — fenêtre supérieure/photopeak",
+    MODEL_RAW_ASYMMETRY: "M9 — ratio brut + asymétrie AP/PA",
+}
 
 MODE_TEW_CROP_GM = "tew_crop_gm"
 MODE_RAW_CROP_GM = "raw_photopeak_crop_gm"
@@ -468,6 +494,20 @@ def mode_matched_measurements(
     raw_photo_gm = gm_images["Photopeak"]
     tew_gm = ac.geometric_mean(tew_ap, tew_pa)
 
+    window_counts: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for support_name, region in (("full", full_slice), ("crop", crop_slice)):
+        window_counts[support_name] = {}
+        for energy in energies:
+            ap_counts = float(np.sum(images[energy]["AP"][region]))
+            pa_counts = float(np.sum(images[energy]["PA"][region]))
+            gm_counts = float(np.sum(gm_images[energy][region]))
+            window_counts[support_name][energy] = {
+                "ap_counts": ap_counts,
+                "pa_counts": pa_counts,
+                "ap_pa_counts": ap_counts + pa_counts,
+                "gm_counts": gm_counts,
+            }
+
     def support_slice(geometry: str) -> tuple[slice, slice]:
         return crop_slice if geometry == GEOMETRY_CROP_GM else full_slice
 
@@ -576,12 +616,42 @@ def mode_matched_measurements(
             for energy in energies
         )
     ) / duration_seconds
+    rwo_cps, rwo_counts_by_view, rwo_cps_by_view = (
+        planar_processing.average_wide_spectrum_rate(
+            list(scan["images"]), duration_seconds
+        )
+    )
+    dead_time_dtcf, dead_time_warnings = dead_time.dead_time_correction_factor(
+        rwo_cps,
+        planar_processing.DEAD_TIME_TAU_US,
+        max_calibrated_rwo_cps=(
+            planar_processing.DEAD_TIME_MAX_CALIBRATED_RWO_CPS
+        ),
+    )
+    try:
+        local_dwell_time_seconds = float(
+            planar_processing.planar_timing_from_dicom(
+                list(scan["images"])
+            ).local_dwell_time_s
+        )
+    except ValueError:
+        # Synthetic/unit-test images may intentionally omit WB table-motion
+        # metadata; the image-derived predictors remain valid in that case.
+        local_dwell_time_seconds = None
     return {
         "duration_seconds": duration_seconds,
+        "local_dwell_time_seconds": local_dwell_time_seconds,
         "features_by_geometry": features_by_geometry,
         "raw_rates": raw_rates,
         "tew_rates": tew_rates,
         "all_four_full_ap_pa_rate": all_four_full_ap_pa_rate,
+        "window_counts": window_counts,
+        "wide_spectrum_counts_by_view": rwo_counts_by_view,
+        "wide_spectrum_cps_by_view": rwo_cps_by_view,
+        "wide_spectrum_mean_cps": rwo_cps,
+        "dead_time_dtcf": dead_time_dtcf,
+        "dead_time_loss_percent": 100.0 * (1.0 - 1.0 / dead_time_dtcf),
+        "dead_time_warnings": tuple(dead_time_warnings),
     }
 
 
@@ -643,39 +713,56 @@ def build_dataset_observations(spec: DatasetSpec) -> Dict[str, Any]:
         )
     }
     features = features_by_geometry[GEOMETRY_CROP_GM]
-    tew_target = np.asarray(
+    observed_tew_target = np.asarray(
         [row["tew_effective_sensitivity_cps_per_mbq"] for row in rows],
         dtype=np.float64,
     )
-    tew_rate = np.asarray([row["tew_gm_cps"] for row in rows], dtype=np.float64)
+    dead_time_dtcfs = np.asarray(
+        [item.get("dead_time_dtcf", 1.0) for item in matched_rows],
+        dtype=np.float64,
+    )
+    observed_tew_rate = np.asarray(
+        [row["tew_gm_cps"] for row in rows], dtype=np.float64
+    )
+    tew_rate = observed_tew_rate * dead_time_dtcfs
     raw_crop_rate = np.asarray(
         [row["raw_photopeak_gm_cps"] for row in rows], dtype=np.float64
-    )
+    ) * dead_time_dtcfs
     raw_full_rate = np.asarray(
         [item["raw_rates"][GEOMETRY_FULL_AP_PA] for item in matched_rows],
         dtype=np.float64,
-    )
+    ) * dead_time_dtcfs
     tew_full_gm_rate = np.asarray(
         [item["tew_rates"][GEOMETRY_FULL_GM] for item in matched_rows],
         dtype=np.float64,
-    )
+    ) * dead_time_dtcfs
     raw_full_gm_rate = np.asarray(
         [item["raw_rates"][GEOMETRY_FULL_GM] for item in matched_rows],
         dtype=np.float64,
-    )
+    ) * dead_time_dtcfs
     tew_full_ap_pa_rate = np.asarray(
         [item["tew_rates"][GEOMETRY_FULL_AP_PA] for item in matched_rows],
         dtype=np.float64,
-    )
+    ) * dead_time_dtcfs
     all_four_full_rate = np.asarray(
         [item["all_four_full_ap_pa_rate"] for item in matched_rows],
         dtype=np.float64,
-    )
-    if tew_target.size == 0:
+    ) * dead_time_dtcfs
+    if observed_tew_target.size == 0:
         raise ValueError(f"No valid paired observations for {spec.key}")
-    if np.any(~np.isfinite(tew_target)) or np.any(tew_target <= 0.0):
+    if np.any(~np.isfinite(observed_tew_target)) or np.any(
+        observed_tew_target <= 0.0
+    ):
         raise ValueError(f"Invalid effective-sensitivity target in {spec.key}")
-    reference_activity = tew_rate / tew_target
+    if all(row.get("qspect_activity_at_planar_time_mbq") for row in rows):
+        reference_activity = np.asarray(
+            [row["qspect_activity_at_planar_time_mbq"] for row in rows],
+            dtype=np.float64,
+        )
+    else:
+        # Backward-compatible path used by synthetic unit-test observations.
+        reference_activity = observed_tew_rate / observed_tew_target
+    tew_target = tew_rate / reference_activity
     rates = {
         MODE_TEW_CROP_GM: tew_rate,
         MODE_RAW_CROP_GM: raw_crop_rate,
@@ -704,6 +791,18 @@ def build_dataset_observations(spec: DatasetSpec) -> Dict[str, Any]:
                 "crop_top": int(row["crop_top"]),
                 "crop_bottom": int(row["crop_bottom"]),
                 "profile_match_accepted": bool(row["profile_match_accepted"]),
+                "qspect_activity_measured_mbq": row.get(
+                    "qspect_activity_measured_mbq"
+                ),
+                "qspect_activity_at_planar_time_mbq": row.get(
+                    "qspect_activity_at_planar_time_mbq"
+                ),
+                "dead_time_dtcf": float(dead_time_dtcfs[len(records)]),
+                "dead_time_loss_percent": float(
+                    matched_rows[len(records)].get(
+                        "dead_time_loss_percent", 0.0
+                    )
+                ),
             }
         )
     return {
@@ -714,6 +813,8 @@ def build_dataset_observations(spec: DatasetSpec) -> Dict[str, Any]:
         "tew_rate": tew_rate,
         "measurement_rate": tew_rate,
         "reference_activity": reference_activity,
+        "source_rows": rows,
+        "matched_measurements": matched_rows,
         "rate_modes": {
             mode_key: {
                 "measurement_rate": rate,
@@ -800,7 +901,11 @@ def load_observation_cache(
 def _combine_observations(
     observations: Mapping[str, Mapping[str, Any]], dataset_keys: Sequence[str]
 ) -> Dict[str, Any]:
-    keys = _validate_dataset_keys(dataset_keys)
+    keys = tuple(str(key) for key in dataset_keys)
+    if not keys:
+        raise ValueError("At least one dataset is required")
+    if len(set(keys)) != len(keys):
+        raise ValueError("Dataset lists must not contain duplicates")
     missing = sorted(set(keys) - set(observations))
     if missing:
         raise ValueError(f"Observation cache is missing: {', '.join(missing)}")
@@ -808,7 +913,11 @@ def _combine_observations(
     return {
         "dataset_keys": keys,
         "records": [
-            record
+            {
+                **record,
+                "source_dataset_key": record.get("dataset_key", key),
+                "dataset_key": key,
+            }
             for key in keys
             for record in observations[key]["records"]
         ],
@@ -838,7 +947,7 @@ def _combine_observations(
 
 
 def _model_features(model_name: str) -> tuple[str, ...]:
-    if model_name == MODEL_CONSTANT:
+    if model_name in (MODEL_CONSTANT, MODEL_ORIGIN_SLOPE):
         return ()
     if model_name == MODEL_LOCKED:
         return (LOCKED_FEATURE,)
@@ -870,6 +979,33 @@ def fit_model(model_name: str, training: Mapping[str, Any]) -> Dict[str, Any]:
             "reason": "",
             "feature_names": feature_names,
             "coefficients": np.asarray([float(np.mean(target))]),
+            "rank": 1,
+            "condition_number": 1.0,
+            "feature_ranges": {},
+        }
+    if model_name == MODEL_ORIGIN_SLOPE:
+        activity = np.asarray(training["reference_activity"], dtype=np.float64)
+        rate = np.asarray(training["measurement_rate"], dtype=np.float64)
+        denominator = float(np.dot(activity, activity))
+        if denominator <= 0.0:
+            return {
+                "model": model_name,
+                "status": "not_estimable",
+                "reason": "zero activity norm in training data",
+                "feature_names": feature_names,
+                "coefficients": np.asarray([np.nan]),
+                "rank": 0,
+                "condition_number": np.nan,
+                "feature_ranges": {},
+            }
+        return {
+            "model": model_name,
+            "status": "fitted",
+            "reason": "",
+            "feature_names": feature_names,
+            "coefficients": np.asarray(
+                [float(np.dot(activity, rate) / denominator)]
+            ),
             "rank": 1,
             "condition_number": 1.0,
             "feature_ranges": {},
@@ -932,7 +1068,7 @@ def predict_model(fit: Mapping[str, Any], test: Mapping[str, Any]) -> np.ndarray
     if fit["status"] != "fitted":
         raise ValueError(f"Cannot predict with model status {fit['status']}")
     coefficients = np.asarray(fit["coefficients"], dtype=np.float64)
-    if fit["model"] == MODEL_CONSTANT:
+    if fit["model"] in (MODEL_CONSTANT, MODEL_ORIGIN_SLOPE):
         return np.full(
             np.asarray(test["target_sensitivity"]).shape,
             coefficients[0],
@@ -975,8 +1111,16 @@ def fit_and_evaluate(
     split_label: str = "custom split",
     rate_mode: str = MODE_TEW_CROP_GM,
     model_names: Sequence[str] | None = None,
+    include_j0_personalized: bool = True,
+    reference_name: str = "reference",
 ) -> Dict[str, Any]:
-    """Fit on X datasets and evaluate unchanged on disjoint Y datasets."""
+    """Fit on X datasets and evaluate unchanged on disjoint Y datasets.
+
+    ``MODEL_J0_PERSONALIZED`` is a deliberately separate reference: it uses
+    the first point of each test cycle to estimate one cycle-specific
+    sensitivity and is scored only on the later points of that same cycle.
+    It is therefore never presented as a fully external model.
+    """
     if rate_mode not in RATE_MODES:
         raise ValueError(f"Unknown rate mode: {rate_mode}")
     fitted_model_names = tuple(
@@ -985,7 +1129,21 @@ def fit_and_evaluate(
     invalid_models = sorted(set(fitted_model_names) - set(MODEL_ORDER))
     if invalid_models:
         raise ValueError(f"Unknown model(s): {', '.join(invalid_models)}")
-    training_keys, test_keys = validate_split(training_datasets, test_datasets)
+    training_keys = tuple(str(key) for key in training_datasets)
+    test_keys = tuple(str(key) for key in test_datasets)
+    if not training_keys or not test_keys:
+        raise ValueError("Training and test datasets must both be non-empty")
+    if len(set(training_keys)) != len(training_keys) or len(set(test_keys)) != len(test_keys):
+        raise ValueError("Dataset lists must not contain duplicates")
+    overlap = sorted(set(training_keys) & set(test_keys))
+    if overlap:
+        raise ValueError(
+            "Training and test datasets must be disjoint; overlap: "
+            + ", ".join(overlap)
+        )
+    unknown = sorted((set(training_keys) | set(test_keys)) - set(observations))
+    if unknown:
+        raise ValueError(f"Observation cache is missing: {', '.join(unknown)}")
     training = _combine_observations(observations, training_keys)
     test = _combine_observations(observations, test_keys)
     metrics_rows: list[Dict[str, Any]] = []
@@ -1011,6 +1169,8 @@ def fit_and_evaluate(
             "fit_reason": fit["reason"],
             "rank": fit["rank"],
             "condition_number": fit["condition_number"],
+            "uses_test_reference_j0": False,
+            "reference_name": reference_name,
         }
         if fit["status"] != "fitted":
             metrics_rows.append(
@@ -1072,6 +1232,25 @@ def fit_and_evaluate(
                     **scoped_metrics,
                 }
             )
+            selected_indices = np.flatnonzero(selected)
+            post_j0_indices = selected_indices[1:]
+            if post_j0_indices.size:
+                post_j0_metrics = _metrics(
+                    target_sensitivity[post_j0_indices],
+                    predicted_sensitivity[post_j0_indices],
+                )
+                metrics_rows.append(
+                    {
+                        **base_metric_row,
+                        "metric_scope": "post_j0_test_dataset",
+                        "metric_dataset": dataset_key,
+                        "extrapolated_predictions": int(
+                            np.count_nonzero(extrapolated[post_j0_indices])
+                        ),
+                        "prediction_count": int(post_j0_indices.size),
+                        **post_j0_metrics,
+                    }
+                )
 
         coefficient_values = np.asarray(fit["coefficients"], dtype=np.float64)
         coefficient_by_name = {"intercept_or_constant": coefficient_values[0]}
@@ -1107,15 +1286,164 @@ def fit_and_evaluate(
                         predicted_sensitivity[index]
                     ),
                     "qspect_activity_mbq": float(reference_activity[index]),
+                    "reference_activity_mbq": float(reference_activity[index]),
                     "predicted_activity_mbq": float(predicted_activity[index]),
                     "predicted_over_qspect": float(activity_ratio[index]),
+                    "predicted_over_reference": float(activity_ratio[index]),
                     "activity_error_percent": float(
                         100.0 * (activity_ratio[index] - 1.0)
                     ),
                     "feature_extrapolation": bool(extrapolated[index]),
                     "fit_rank": fit["rank"],
                     "fit_condition_number": fit["condition_number"],
+                    "reference_name": reference_name,
+                    "uses_test_reference_j0": False,
+                    "used_for_j0_calibration": False,
+                    "included_in_post_j0_metric": bool(
+                        index
+                        != int(
+                            np.flatnonzero(dataset_array == record["dataset_key"])[0]
+                        )
+                    ),
                     **coefficient_by_name,
+                }
+            )
+
+    if include_j0_personalized:
+        dataset_array = np.asarray(
+            [record["dataset_key"] for record in test["records"]], dtype=object
+        )
+        target_sensitivity = np.asarray(test["target_sensitivity"], dtype=np.float64)
+        measurement_rate = np.asarray(test["measurement_rate"], dtype=np.float64)
+        reference_activity = np.asarray(test["reference_activity"], dtype=np.float64)
+        combined_target: list[float] = []
+        combined_predicted: list[float] = []
+        for dataset_key in test_keys:
+            selected_indices = np.flatnonzero(dataset_array == dataset_key)
+            if not selected_indices.size:
+                continue
+            first_index = int(selected_indices[0])
+            if reference_activity[first_index] <= 0.0:
+                continue
+            sensitivity_j0 = float(
+                measurement_rate[first_index] / reference_activity[first_index]
+            )
+            predicted_sensitivity = np.full(
+                selected_indices.size, sensitivity_j0, dtype=np.float64
+            )
+            predicted_activity = (
+                measurement_rate[selected_indices] / predicted_sensitivity
+            )
+            ratios = predicted_activity / reference_activity[selected_indices]
+            post_local = np.arange(1, selected_indices.size, dtype=int)
+            if post_local.size:
+                scoped_metrics = _metrics(
+                    target_sensitivity[selected_indices][post_local],
+                    predicted_sensitivity[post_local],
+                )
+                metrics_rows.append(
+                    {
+                        "rate_mode": rate_mode,
+                        "rate_mode_label": RATE_MODES[rate_mode].label,
+                        "split_id": split_id,
+                        "split_type": split_type,
+                        "split_label": split_label,
+                        "training_datasets": f"{dataset_key}:J0",
+                        "test_datasets": dataset_key,
+                        "n_train": 1,
+                        "n_test": int(post_local.size),
+                        "model": MODEL_J0_PERSONALIZED,
+                        "model_label": MODEL_LABELS[MODEL_J0_PERSONALIZED],
+                        "fit_status": "fitted",
+                        "fit_reason": "",
+                        "rank": 1,
+                        "condition_number": 1.0,
+                        "uses_test_reference_j0": True,
+                        "reference_name": reference_name,
+                        "metric_scope": "post_j0_test_dataset",
+                        "metric_dataset": dataset_key,
+                        "extrapolated_predictions": 0,
+                        "prediction_count": int(post_local.size),
+                        **scoped_metrics,
+                    }
+                )
+                combined_target.extend(
+                    target_sensitivity[selected_indices][post_local].tolist()
+                )
+                combined_predicted.extend(predicted_sensitivity[post_local].tolist())
+
+            for local_index, global_index in enumerate(selected_indices):
+                record = test["records"][int(global_index)]
+                feature_values = {
+                    name: float(test["features"][name][global_index])
+                    for name in FEATURE_ORDER
+                }
+                prediction_rows.append(
+                    {
+                        "rate_mode": rate_mode,
+                        "rate_mode_label": RATE_MODES[rate_mode].label,
+                        "split_id": split_id,
+                        "split_type": split_type,
+                        "split_label": split_label,
+                        "training_datasets": f"{dataset_key}:J0",
+                        "test_datasets": dataset_key,
+                        "model": MODEL_J0_PERSONALIZED,
+                        "model_label": MODEL_LABELS[MODEL_J0_PERSONALIZED],
+                        **record,
+                        **feature_values,
+                        "measurement_rate_cps": float(measurement_rate[global_index]),
+                        "observed_sensitivity_cps_per_mbq": float(
+                            target_sensitivity[global_index]
+                        ),
+                        "predicted_sensitivity_cps_per_mbq": sensitivity_j0,
+                        "qspect_activity_mbq": float(reference_activity[global_index]),
+                        "reference_activity_mbq": float(reference_activity[global_index]),
+                        "predicted_activity_mbq": float(predicted_activity[local_index]),
+                        "predicted_over_qspect": float(ratios[local_index]),
+                        "predicted_over_reference": float(ratios[local_index]),
+                        "activity_error_percent": float(
+                            100.0 * (ratios[local_index] - 1.0)
+                        ),
+                        "feature_extrapolation": False,
+                        "fit_rank": 1,
+                        "fit_condition_number": 1.0,
+                        "reference_name": reference_name,
+                        "uses_test_reference_j0": True,
+                        "used_for_j0_calibration": local_index == 0,
+                        "included_in_post_j0_metric": local_index > 0,
+                        "intercept_or_constant": sensitivity_j0,
+                    }
+                )
+
+        if combined_target:
+            combined_metrics = _metrics(
+                np.asarray(combined_target, dtype=np.float64),
+                np.asarray(combined_predicted, dtype=np.float64),
+            )
+            metrics_rows.append(
+                {
+                    "rate_mode": rate_mode,
+                    "rate_mode_label": RATE_MODES[rate_mode].label,
+                    "split_id": split_id,
+                    "split_type": split_type,
+                    "split_label": split_label,
+                    "training_datasets": "each_test_cycle:J0",
+                    "test_datasets": "+".join(test_keys),
+                    "n_train": len(test_keys),
+                    "n_test": len(combined_target),
+                    "model": MODEL_J0_PERSONALIZED,
+                    "model_label": MODEL_LABELS[MODEL_J0_PERSONALIZED],
+                    "fit_status": "fitted",
+                    "fit_reason": "",
+                    "rank": 1,
+                    "condition_number": 1.0,
+                    "uses_test_reference_j0": True,
+                    "reference_name": reference_name,
+                    "metric_scope": "post_j0_combined_test",
+                    "metric_dataset": "+".join(test_keys),
+                    "extrapolated_predictions": 0,
+                    "prediction_count": len(combined_target),
+                    **combined_metrics,
                 }
             )
 
@@ -1147,6 +1475,81 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         writer = csv.DictWriter(stream, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def plot_post_j0_model_mare(
+    metrics_rows: Sequence[Mapping[str, Any]],
+    rate_mode: str,
+    output_path: Path,
+    *,
+    model_names: Sequence[str] | None = None,
+    split_type: str = "leave_one_patient_out",
+    title_prefix: str = "Comparaison équitable après J0",
+) -> Path:
+    """Compare J0 and training-only models on the same follow-up points."""
+    standard_models = tuple(
+        RATE_MODES[rate_mode].model_names if model_names is None else model_names
+    )
+    plotted_models = (MODEL_J0_PERSONALIZED, *standard_models)
+    selected_rows = [
+        row
+        for row in metrics_rows
+        if row.get("rate_mode") == rate_mode
+        and row.get("split_type") == split_type
+        and row.get("metric_scope") == "post_j0_test_dataset"
+        and row.get("model") in plotted_models
+    ]
+    datasets = list(
+        dict.fromkeys(str(row["metric_dataset"]) for row in selected_rows)
+    )
+    matrix = np.full((len(datasets), len(plotted_models)), np.nan, dtype=float)
+    for row in selected_rows:
+        if row.get("fit_status") != "fitted":
+            continue
+        i = datasets.index(str(row["metric_dataset"]))
+        j = plotted_models.index(str(row["model"]))
+        matrix[i, j] = float(row["activity_mare_percent"])
+
+    width = max(10.0, 1.0 + 1.08 * len(plotted_models))
+    height = max(4.4, 1.9 + 0.75 * max(len(datasets), 1))
+    fig, axis = plt.subplots(figsize=(width, height), facecolor="white")
+    finite = matrix[np.isfinite(matrix)]
+    vmax = (
+        30.0
+        if finite.size == 0
+        else max(10.0, min(100.0, float(np.nanpercentile(finite, 95.0))))
+    )
+    image = axis.imshow(matrix, cmap="YlOrRd", vmin=0.0, vmax=vmax, aspect="auto")
+    for i in range(matrix.shape[0]):
+        for j in range(matrix.shape[1]):
+            value = matrix[i, j]
+            axis.text(
+                j,
+                i,
+                "--" if not np.isfinite(value) else f"{value:.1f}",
+                ha="center",
+                va="center",
+                fontsize=9.5,
+                color=(
+                    "white"
+                    if np.isfinite(value) and value >= 0.65 * vmax
+                    else "black"
+                ),
+            )
+    model_codes = [MODEL_LABELS[model].split(" — ", 1)[0] for model in plotted_models]
+    axis.set_xticks(range(len(plotted_models)), model_codes)
+    axis.set_yticks(range(len(datasets)), [dataset.upper() for dataset in datasets])
+    axis.set_xlabel("Référence ou modèle")
+    axis.set_ylabel("Cycle testé — J0 exclu du calcul de l'erreur")
+    axis.set_title(f"{title_prefix} — {RATE_MODES[rate_mode].short_label}")
+    colorbar = fig.colorbar(image, ax=axis, pad=0.02)
+    colorbar.set_label("MARE sur l'activité post-J0 (%)")
+    fig.tight_layout()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return output_path
 
 
 def _combined_metric_lookup(
@@ -1601,11 +2004,12 @@ def build_report(
     )
     for model_name in reported_models:
         feature_names = _model_features(model_name)
-        description = (
-            "moyenne de la sensibilité d’entraînement"
-            if not feature_names
-            else " + ".join(feature_names)
-        )
+        if model_name == MODEL_CONSTANT:
+            description = "moyenne de la sensibilité d’entraînement"
+        elif model_name == MODEL_ORIGIN_SLOPE:
+            description = "pente à l’origine R=S*A sur l’entraînement"
+        else:
+            description = " + ".join(feature_names)
         lines.append(f"  {MODEL_LABELS[model_name]}: {description}.")
     lines.extend(
         [
@@ -1680,16 +2084,19 @@ def build_report(
     return "\n".join(lines)
 
 
-def build_model_methodology_document() -> str:
-    """Return a standalone description of the ten v3 candidate models."""
-    return """MODÈLES DE SENSIBILITÉ EFFECTIVE PLANAIRE — V3
+def build_model_methodology_document(
+    reference_symbol: str = "A_QSPECT",
+    reference_label: str = "Q/SPECT",
+) -> str:
+    """Return a standalone description of the shared candidate models."""
+    document = """MODÈLES DE SENSIBILITÉ EFFECTIVE PLANAIRE — V3
 =================================================
 
 OBJECTIF COMMUN
 ---------------
 
-Les neuf modèles conservés de M0 à M9 ne sont pas neuf algorithmes statistiques
-différents. Ils représentent neuf choix de variables planaires appliqués aux
+Les modèles conservés de M0 à M9 ne sont pas des algorithmes statistiques
+entièrement différents. Ils représentent surtout des choix de variables planaires appliqués aux
 différentes définitions du taux de comptage. Pour chaque mode m, la cible est :
 
     S_eff(m) = R_planaire(m) / A_QSPECT
@@ -1835,6 +2242,13 @@ Cas particuliers :
 
     * M0 ne contient aucun ratio spectral. Il utilise la moyenne arithmétique
       des valeurs S_eff des observations d'entraînement pour le mode considéré.
+    * M0b ne contient aucun ratio spectral. Il ajuste plutôt la pente à
+      l'origine de la relation R = S*A sur toutes les observations
+      d'entraînement : S = somme(A*R)/somme(A²).
+    * J0 est une référence personnalisée distincte : S_J0 = R_J0/A_J0 pour
+      chaque cycle testé. J0 participe à sa calibration et est donc exclu du
+      calcul de l'erreur; seuls les points suivants sont évalués. Cette
+      référence n'est jamais qualifiée de validation entièrement externe.
     * M2 reprend le ratio global de M1 et ajoute une asymétrie AP/PA. Pour cette
       asymétrie, les comptes AP et PA du photopeak sont sommés séparément sur
       Ω_m, normalisés, puis leur ratio est calculé. Ce n'est pas une carte de
@@ -1886,6 +2300,35 @@ Limite principale :
 
     Il ne peut pas représenter les différences d'atténuation, de diffusé ou de
     gabarit entre patients.
+
+
+M0b — PENTE COMPTES–ACTIVITÉ À L'ORIGINE
+-----------------------------------------
+
+Forme :
+
+    R = S*A
+    S = somme(A_i*R_i) / somme(A_i²), sur l'entraînement seulement
+
+La sensibilité S est ensuite verrouillée et appliquée sans réajustement aux
+cycles de test. Contrairement à M0, cette estimation pondère davantage les
+observations de forte activité. Elle reste un modèle à sensibilité constante,
+sans variable spectrale.
+
+
+J0 — CALIBRATION PERSONNALISÉE AU PREMIER POINT
+-----------------------------------------------
+
+Forme :
+
+    S_J0 = R_J0 / A_J0
+    A_prédite(t>J0) = R(t) / S_J0
+
+Cette référence emploie l'activité connue au premier point du cycle testé.
+Elle répond à la question « une calibration individuelle précoce suffit-elle
+pour les suivis? ». Pour une comparaison juste, M0, M0b et M1–M9 sont aussi
+recalculés sur les seuls points post-J0 dans la figure dédiée. J0 ne peut pas
+être présenté comme un modèle utilisable sans aucune activité de référence.
 
 
 M1 — RATIO SPECTRAL VERROUILLÉ
@@ -2163,7 +2606,7 @@ RÉSUMÉ DES FAMILLES
     M9                  : rapport photopeak/General Scatter plus asymétrie AP/PA
                           des quatre fenêtres.
 
-    Modèles à 0 variable : M0.
+    Modèles à 0 variable spectrale : M0 et M0b.
     Modèles à 1 variable : M1, M4, M5, M6, M7 et M8.
     Modèles à 2 variables : M2 et M9.
 
@@ -2188,6 +2631,15 @@ LIMITES COMMUNES ACTUELLES
     * Une validation sur des patients supplémentaires demeure nécessaire avant
       de conclure à une capacité de généralisation.
 """
+    document = document.replace("A_QSPECT", reference_symbol)
+    document = document.replace(
+        "activité Q/SPECT de référence", f"activité {reference_label} de référence"
+    )
+    document = document.replace(
+        "Le Q/SPECT est utilisé comme cible",
+        f"{reference_label} est utilisé comme cible",
+    )
+    return document
 
 
 def _mode_metric_lookup(
@@ -2499,21 +2951,17 @@ def plot_mode_comparison_primary_predictions(
 def plot_six_mode_primary_mare(
     metrics_rows: Sequence[Mapping[str, Any]], output_path: Path
 ) -> None:
-    """Place the six factorial mode-specific MARE summaries in a 2x3 grid."""
-    modes = FACTORIAL_COMPARISON_MODES
-    processing_labels = (
-        "Crop + GM",
-        "Image complète + GM",
-        "Image complète + AP+PA",
-    )
-    row_labels = ("Avec TEW", "Photopeak brut")
-    row_colors = ("#2E9F55", "#1F77B4")
-    y = np.arange(len(MODEL_ORDER), dtype=np.float64)
+    """Presentation summary focused on the matched Q/SPECT crop and GM."""
+    modes = (MODE_TEW_CROP_GM, MODE_RAW_CROP_GM)
+    mode_labels = ("Avec TEW", "Photopeak brut")
+    mode_colors = ("#2E9F55", "#1F77B4")
+    models = MODELS_WITHOUT_TEW_INPUT
+    y = np.arange(len(models), dtype=np.float64)
     values_by_mode: Dict[str, Dict[str, float]] = {}
     finite_values: list[float] = []
     for rate_mode in modes:
         mode_values: Dict[str, float] = {}
-        for model_name in RATE_MODES[rate_mode].model_names:
+        for model_name in models:
             row = _mode_metric_lookup(
                 metrics_rows,
                 rate_mode,
@@ -2526,88 +2974,77 @@ def plot_six_mode_primary_mare(
                 finite_values.append(value)
         values_by_mode[rate_mode] = mode_values
 
-    x_max = max(finite_values, default=10.0) * 1.20
-    fig, axes = plt.subplots(
-        2,
-        3,
-        figsize=(19.5, 14.0),
-        sharex=True,
-        sharey=True,
-        facecolor="white",
+    x_max = max(22.0, max(finite_values, default=10.0) * 1.18)
+    fig, axis = plt.subplots(
+        figsize=(16.5, 10.5), layout="constrained", facecolor="white"
     )
-    flat_axes = np.asarray(axes, dtype=object).reshape(-1)
-    for panel_index, (axis, rate_mode) in enumerate(zip(flat_axes, modes)):
-        mode_values = values_by_mode[rate_mode]
-        for row_index, model_name in enumerate(MODEL_ORDER):
-            if model_name not in mode_values:
+    bar_height = 0.34
+    for mode_index, (rate_mode, label, color) in enumerate(
+        zip(modes, mode_labels, mode_colors)
+    ):
+        offset = (mode_index - 0.5) * bar_height
+        values = [values_by_mode[rate_mode].get(model, np.nan) for model in models]
+        bars = axis.barh(
+            y + offset,
+            np.nan_to_num(values, nan=0.0),
+            height=bar_height * 0.90,
+            color=color,
+            alpha=0.92,
+            label=label,
+        )
+        for bar, value in zip(bars, values):
+            if not np.isfinite(value):
                 continue
-            value = mode_values[model_name]
-            axis.barh(
-                row_index,
-                value,
-                color=MODEL_COLORS[model_name],
-                height=0.68,
-            )
             axis.annotate(
                 f"{value:.1f} %",
-                (value, row_index),
-                xytext=(4, 0),
+                (value, bar.get_y() + bar.get_height() / 2.0),
+                xytext=(5, 0),
                 textcoords="offset points",
                 va="center",
                 ha="left",
-                fontsize=11.5,
+                fontsize=13,
                 fontweight="bold",
             )
-        axis.set_xlim(0.0, x_max)
-        row_index, column_index = divmod(panel_index, 3)
-        axis.set_title(
-            processing_labels[column_index], fontsize=17, pad=34
-        )
-        axis.text(
-            0.5,
-            1.01,
-            row_labels[row_index],
-            transform=axis.transAxes,
-            ha="center",
-            va="bottom",
-            fontsize=14.5,
-            fontweight="bold",
-            color=row_colors[row_index],
-        )
-        axis.set_xlabel("MARE sur l’activité (%)", fontsize=14)
-        axis.tick_params(axis="both", labelsize=12.5)
-        axis.grid(axis="x", linestyle="--", alpha=0.25)
-        axis.spines[["top", "right"]].set_visible(False)
-    flat_axes[0].set_yticks(
-        y, [MODEL_LABELS[model].split(" — ")[0] for model in MODEL_ORDER]
+
+    axis.axvline(
+        10.0,
+        color="#555555",
+        linestyle="--",
+        linewidth=1.4,
+        alpha=0.75,
     )
-    flat_axes[0].invert_yaxis()
-    axes_array = np.asarray(axes, dtype=object).reshape(2, 3)
-    for axis in axes_array[:, 0]:
-        axis.tick_params(labelleft=True)
-    fig.suptitle(
-        "Performance des modèles selon les six modes principaux\n"
-        "Entraînement P11-mai + P11-juillet — test P8-juin",
-        fontsize=21,
-        y=0.985,
-    )
-    fig.text(
-        0.5,
-        0.02,
-        "Les lignes vides indiquent un modèle non compatible avec ce mode. "
-        "Le mode quatre fenêtres demeure dans l’analyse exploratoire séparée.",
+    axis.text(
+        10.0,
+        -0.82,
+        "repère 10 %",
         ha="center",
         va="bottom",
-        fontsize=12,
+        fontsize=11.5,
+        color="#444444",
     )
-    fig.subplots_adjust(
-        left=0.07,
-        right=0.985,
-        bottom=0.085,
-        top=0.84,
-        hspace=0.31,
-        wspace=0.12,
+    axis.set_xlim(0.0, x_max)
+    axis.set_yticks(
+        y, [PRESENTATION_MODEL_LABELS[model] for model in models]
     )
+    axis.invert_yaxis()
+    axis.set_xlabel("Erreur absolue relative moyenne — MARE (%)", fontsize=16)
+    axis.set_title(
+        "Performance des modèles — crop Q/SPECT et moyenne géométrique\n"
+        "Entraînement : deux cycles de P11 | Test sans réajustement : P8 (3 points)",
+        fontsize=22,
+        pad=18,
+    )
+    axis.tick_params(axis="x", labelsize=14)
+    axis.tick_params(axis="y", labelsize=13.5)
+    axis.grid(axis="x", linestyle="--", alpha=0.22)
+    axis.legend(
+        loc="lower right",
+        frameon=False,
+        fontsize=14,
+        title="Taux planaire utilisé",
+        title_fontsize=13,
+    )
+    axis.spines[["top", "right"]].set_visible(False)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -2616,26 +3053,29 @@ def plot_six_mode_primary_mare(
 def plot_six_mode_primary_predictions(
     prediction_rows: Sequence[Mapping[str, Any]], output_path: Path
 ) -> None:
-    """Place the six factorial mode-specific P8 predictions in a 2x3 grid."""
-    modes = FACTORIAL_COMPARISON_MODES
-    processing_labels = (
-        "Crop + GM",
-        "Image complète + GM",
-        "Image complète + AP+PA",
+    """Show a readable crop-only selection of P8 predictions."""
+    modes = (MODE_TEW_CROP_GM, MODE_RAW_CROP_GM)
+    panel_labels = ("Avec TEW", "Photopeak brut")
+    panel_colors = ("#2E9F55", "#1F77B4")
+    plotted_models = (
+        MODEL_CONSTANT,
+        MODEL_LOCKED,
+        MODEL_ADJACENT,
+        MODEL_LOWER,
     )
-    row_labels = ("Avec TEW", "Photopeak brut")
-    row_colors = ("#2E9F55", "#1F77B4")
     split_id = "loco_holdout_p8_june"
     plotted_ratios: list[float] = []
     fig, axes = plt.subplots(
+        1,
         2,
-        3,
-        figsize=(20.0, 10.4),
+        figsize=(17.0, 7.8),
         sharey=True,
         facecolor="white",
     )
     flat_axes = np.asarray(axes, dtype=object).reshape(-1)
-    for panel_index, (axis, rate_mode) in enumerate(zip(flat_axes, modes)):
+    for axis, rate_mode, panel_label, panel_color in zip(
+        flat_axes, modes, panel_labels, panel_colors
+    ):
         selected = [
             row
             for row in prediction_rows
@@ -2656,11 +3096,6 @@ def plot_six_mode_primary_predictions(
             label="Écart de ±10 %",
         )
         axis.axhline(1.0, color="black", linewidth=1.3, label="Q/SPECT")
-        plotted_models = tuple(
-            model
-            for model in PRIMARY_PLOT_MODELS
-            if model in RATE_MODES[rate_mode].model_names
-        )
         for model_name in plotted_models:
             model_rows = [
                 row for row in selected if row["model"] == model_name
@@ -2672,6 +3107,7 @@ def plot_six_mode_primary_predictions(
                 float(row["predicted_over_qspect"]) for row in model_rows
             ]
             plotted_ratios.extend(ratios)
+            mare = 100.0 * float(np.mean(np.abs(np.asarray(ratios) - 1.0)))
             axis.plot(
                 x,
                 ratios,
@@ -2679,7 +3115,10 @@ def plot_six_mode_primary_predictions(
                 linewidth=2.1,
                 markersize=7.5,
                 color=MODEL_COLORS[model_name],
-                label=MODEL_LABELS[model_name].split(" — ")[0],
+                label=(
+                    f"{MODEL_LABELS[model_name].split(' — ')[0]} "
+                    f"(MARE {mare:.1f} %)"
+                ),
             )
             for position, value, row in zip(x, ratios, model_rows):
                 if bool(row["feature_extrapolation"]):
@@ -2696,70 +3135,157 @@ def plot_six_mode_primary_predictions(
         axis.set_xticks(x, timepoints)
         axis.set_xlabel("Timepoint de P8", fontsize=14.5)
         axis.tick_params(axis="both", labelsize=13)
-        row_index, column_index = divmod(panel_index, 3)
         axis.set_title(
-            processing_labels[column_index], fontsize=17, pad=34
-        )
-        axis.text(
-            0.5,
-            1.01,
-            row_labels[row_index],
-            transform=axis.transAxes,
-            ha="center",
-            va="bottom",
-            fontsize=14.5,
+            panel_label,
+            fontsize=18,
             fontweight="bold",
-            color=row_colors[row_index],
+            color=panel_color,
+            pad=12,
         )
         axis.grid(axis="y", linestyle="--", alpha=0.25)
         axis.spines[["top", "right"]].set_visible(False)
-    axes_array = np.asarray(axes, dtype=object).reshape(2, 3)
-    for axis in axes_array[:, 0]:
-        axis.set_ylabel(
-            "Activité prédite / activité Q/SPECT", fontsize=14.5
-        )
-        axis.tick_params(labelleft=True)
+        axis.legend(frameon=False, fontsize=11.5, loc="best")
+    flat_axes[0].set_ylabel(
+        "Activité prédite / activité Q/SPECT", fontsize=15
+    )
+    flat_axes[0].tick_params(labelleft=True)
     if plotted_ratios:
         y_min = min(0.88, min(plotted_ratios) - 0.035)
         y_max = max(1.12, max(plotted_ratios) + 0.035)
         flat_axes[0].set_ylim(y_min, y_max)
-    handles: list[Any] = []
-    labels: list[str] = []
-    for axis in flat_axes:
-        for handle, label in zip(*axis.get_legend_handles_labels()):
-            if label not in labels:
-                handles.append(handle)
-                labels.append(label)
-    fig.legend(
-        handles,
-        labels,
-        loc="lower center",
-        bbox_to_anchor=(0.5, 0.015),
-        ncol=5,
-        frameon=False,
-        fontsize=11.8,
-    )
     fig.suptitle(
-        "Prédictions sur le patient exclu P8 selon les six modes principaux\n"
-        "Entraînement sur les deux cycles de P11",
-        fontsize=21,
-        y=0.985,
+        "Prédictions sur P8 — crop Q/SPECT et moyenne géométrique\n"
+        "Modèles entraînés sur les deux cycles de P11, sans réajustement",
+        fontsize=22,
+        y=0.99,
     )
     fig.text(
-        0.985,
-        0.115,
-        "Marqueur ouvert : variable hors de l’intervalle d’entraînement",
+        0.99,
+        0.015,
+        "Zone verte : écart de ±10 % | Marqueur ouvert : extrapolation",
         ha="right",
         va="bottom",
         fontsize=11.5,
+        color="#444444",
     )
     fig.subplots_adjust(
-        left=0.075,
+        left=0.08,
         right=0.985,
-        bottom=0.19,
-        top=0.805,
-        hspace=0.58,
-        wspace=0.10,
+        bottom=0.12,
+        top=0.81,
+        wspace=0.08,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def plot_crop_vs_full_benchmark_mare(
+    metrics_rows: Sequence[Mapping[str, Any]], output_path: Path
+) -> None:
+    """Benchmark crop versus full image while keeping GM fixed."""
+    scatter_panels = (
+        (
+            "Avec TEW",
+            "#2E9F55",
+            MODE_TEW_CROP_GM,
+            MODE_TEW_FULL_GM,
+        ),
+        (
+            "Photopeak brut",
+            "#1F77B4",
+            MODE_RAW_CROP_GM,
+            MODE_RAW_FULL_GM,
+        ),
+    )
+    models = MODELS_WITHOUT_TEW_INPUT
+    y = np.arange(len(models), dtype=np.float64)
+    all_values: list[float] = []
+    panels: list[tuple[str, str, list[float], list[float]]] = []
+    for label, color, crop_mode, full_mode in scatter_panels:
+        crop_values: list[float] = []
+        full_values: list[float] = []
+        for model in models:
+            crop_row = _mode_metric_lookup(
+                metrics_rows, crop_mode, "loco_holdout_p8_june", model
+            )
+            full_row = _mode_metric_lookup(
+                metrics_rows, full_mode, "loco_holdout_p8_june", model
+            )
+            crop_value = (
+                float(crop_row["activity_mare_percent"])
+                if crop_row is not None and crop_row["fit_status"] == "fitted"
+                else np.nan
+            )
+            full_value = (
+                float(full_row["activity_mare_percent"])
+                if full_row is not None and full_row["fit_status"] == "fitted"
+                else np.nan
+            )
+            crop_values.append(crop_value)
+            full_values.append(full_value)
+            if np.isfinite(crop_value):
+                all_values.append(crop_value)
+            if np.isfinite(full_value):
+                all_values.append(full_value)
+        panels.append((label, color, crop_values, full_values))
+
+    x_max = max(22.0, max(all_values, default=10.0) * 1.18)
+    fig, axes = plt.subplots(
+        1, 2, figsize=(19.0, 10.0), sharex=True, sharey=True, facecolor="white"
+    )
+    bar_height = 0.34
+    for axis, (label, color, crop_values, full_values) in zip(axes, panels):
+        for offset, values, support_label, support_color in (
+            (-bar_height / 2.0, crop_values, "Crop Q/SPECT", color),
+            (bar_height / 2.0, full_values, "Image complète", "#9A9A9A"),
+        ):
+            bars = axis.barh(
+                y + offset,
+                np.nan_to_num(values, nan=0.0),
+                height=bar_height * 0.90,
+                color=support_color,
+                alpha=0.92,
+                label=support_label,
+            )
+            for bar, value in zip(bars, values):
+                if not np.isfinite(value):
+                    continue
+                axis.annotate(
+                    f"{value:.1f}",
+                    (value, bar.get_y() + bar.get_height() / 2.0),
+                    xytext=(4, 0),
+                    textcoords="offset points",
+                    va="center",
+                    ha="left",
+                    fontsize=11.5,
+                    fontweight="bold",
+                )
+        axis.axvline(10.0, color="#555555", linestyle="--", linewidth=1.2)
+        axis.set_xlim(0.0, x_max)
+        axis.set_title(label, fontsize=18, fontweight="bold", color=color)
+        axis.set_xlabel("MARE sur l’activité (%)", fontsize=15)
+        axis.tick_params(axis="x", labelsize=13)
+        axis.grid(axis="x", linestyle="--", alpha=0.22)
+        axis.spines[["top", "right"]].set_visible(False)
+        axis.legend(frameon=False, fontsize=12.5, loc="lower right")
+    axes[0].set_yticks(
+        y, [PRESENTATION_MODEL_LABELS[model] for model in models]
+    )
+    axes[0].invert_yaxis()
+    axes[0].tick_params(axis="y", labelsize=12.5)
+    fig.suptitle(
+        "Benchmark du support spatial — moyenne géométrique identique\n"
+        "L’image complète est une analyse de comparaison, pas le mode principal",
+        fontsize=21,
+        y=0.985,
+    )
+    fig.subplots_adjust(
+        left=0.15,
+        right=0.985,
+        bottom=0.09,
+        top=0.86,
+        wspace=0.08,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
@@ -2841,8 +3367,12 @@ def run_default_analysis(output_dir: Path = DEFAULT_OUTPUT_DIR) -> Dict[str, Any
     base_observations = load_base_observation_cache()
     shared_dir = output_dir / "shared_inputs"
     comparison_dir = output_dir / "comparison_modes"
+    benchmark_dir = comparison_dir / "benchmark_image_complete"
+    annex_dir = comparison_dir / "annexes"
     shared_dir.mkdir(parents=True, exist_ok=True)
     comparison_dir.mkdir(parents=True, exist_ok=True)
+    benchmark_dir.mkdir(parents=True, exist_ok=True)
+    annex_dir.mkdir(parents=True, exist_ok=True)
     inventory_rows = [
         {
             "dataset_key": key,
@@ -2975,17 +3505,17 @@ def run_default_analysis(output_dir: Path = DEFAULT_OUTPUT_DIR) -> Dict[str, Any
         build_mode_comparison_report(all_metrics), encoding="utf-8"
     )
     plot_mode_comparison_primary_mare(
-        all_metrics, comparison_dir / "v3_mode_comparison_primary_mare.png"
+        all_metrics, benchmark_dir / "v3_all_modes_model_mare_heatmap.png"
     )
     plot_tew_vs_raw_crop_primary_mare(
-        all_metrics, comparison_dir / "v3_tew_vs_raw_crop_primary_mare.png"
+        all_metrics, annex_dir / "v3_tew_vs_raw_crop_primary_mare.png"
     )
     plot_factorial_m0_mare(
-        all_metrics, comparison_dir / "v3_factorial_m0_mare.png"
+        all_metrics, benchmark_dir / "v3_factorial_m0_mare.png"
     )
     plot_mode_comparison_primary_predictions(
         all_predictions,
-        comparison_dir / "v3_mode_comparison_primary_predictions.png",
+        benchmark_dir / "v3_M0_M1_all_modes_predictions.png",
     )
     plot_six_mode_primary_mare(
         all_metrics,
@@ -2994,6 +3524,50 @@ def run_default_analysis(output_dir: Path = DEFAULT_OUTPUT_DIR) -> Dict[str, Any
     plot_six_mode_primary_predictions(
         all_predictions,
         comparison_dir / "v3_six_main_modes_primary_predictions.png",
+    )
+    plot_crop_vs_full_benchmark_mare(
+        all_metrics,
+        benchmark_dir / "v3_crop_vs_complete_model_mare.png",
+    )
+    # Remove obsolete root-level comparison figures from the previous layout.
+    # The two presentation figures stay at their historical paths; all
+    # full-image comparisons now live in benchmark_image_complete.
+    for legacy_name in (
+        "v3_factorial_m0_mare.png",
+        "v3_mode_comparison_primary_mare.png",
+        "v3_mode_comparison_primary_predictions.png",
+        "v3_tew_vs_raw_crop_primary_mare.png",
+    ):
+        legacy_path = comparison_dir / legacy_name
+        if legacy_path.is_file():
+            legacy_path.unlink()
+    (comparison_dir / "README.txt").write_text(
+        """FIGURES PRINCIPALES DU MODELE V3
+================================
+
+Les deux figures PNG a la racine sont les figures principales. Elles utilisent
+uniquement le crop correspondant a la couverture Q/SPECT et la moyenne
+geometrique. TEW et photopeak brut sont compares sans changer le support.
+
+v3_six_main_modes_primary_model_mare.png
+    Compare tous les modeles compatibles entre TEW et photopeak brut.
+
+v3_six_main_modes_primary_predictions.png
+    Montre les predictions de P8 pour M0, M1, M4 et M7. Les modeles ont ete
+    entraines sur les deux cycles de P11 puis verrouilles.
+
+benchmark_image_complete/
+    Contient les analyses utilisant l'image complete. Elles servent de
+    benchmark et ne sont pas les figures principales.
+
+annexes/
+    Contient les comparaisons secondaires, dont l'analyse TEW versus photopeak
+    brut sous un support crop identique.
+
+Limite: le crop est encore guide par le Q/SPECT. Il s'agit donc d'une analyse
+de developpement matched-FOV, pas encore d'un pipeline planaire autonome.
+""",
+        encoding="utf-8",
     )
     readme_lines = [
         "V3 multimode output organization",
@@ -3008,11 +3582,12 @@ def run_default_analysis(output_dir: Path = DEFAULT_OUTPUT_DIR) -> Dict[str, Any
     readme_lines.extend(
         [
             "",
-            "comparison_modes: fair cross-mode figures and combined CSV files.",
+            "comparison_modes: two crop-focused presentation figures, combined",
+            "CSV files, an image-complete benchmark folder and annexes.",
             "shared_inputs: dataset inventory and predictor correlation figure.",
             "",
-            "The two six-panel figures compare the six primary modes in a 2x3",
-            "grid. The four-window mode remains a separate exploratory mode.",
+            "The two historical six-mode filenames now contain crop-focused",
+            "presentation summaries. Their names are retained for compatibility.",
             "",
             "The added full-image modes form a factorial comparison of crop",
             "versus full image, TEW versus raw photopeak, and geometric mean",

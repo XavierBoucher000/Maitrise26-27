@@ -23,6 +23,26 @@ FIG_ROOT = PROJECT_DIR / "fig"
 DEFAULT_PATIENT = "p11"
 DEFAULT_CYCLE = "2026-05__Studies"
 
+# Ordre visuel commun aux figures multi-patients. Les cycles d'un même patient
+# restent adjacents; les autres patients suivent la date de leur premier cycle.
+PATIENT_ORDER = ("p11", "p8", "p17")
+
+
+def patient_sort_key(patient: str) -> tuple[int, str]:
+    """Return the stable display order for one patient identifier."""
+    normalized = _patient_folder(patient)
+    try:
+        rank = PATIENT_ORDER.index(normalized)
+    except ValueError:
+        rank = len(PATIENT_ORDER)
+    return rank, normalized
+
+
+def patient_cycle_sort_key(patient: str, cycle: str) -> tuple[int, str, str]:
+    """Group cycles by patient, then order cycles chronologically."""
+    rank, normalized = patient_sort_key(patient)
+    return rank, normalized, str(cycle)
+
 
 # Scientific categories keep the figure tree navigable while the script name
 # remains a stable and unambiguous leaf directory.  Unknown analyses go under
@@ -35,6 +55,8 @@ ANALYSIS_CATEGORIES = {
     "patient_sensitivity_feature_test_v2": ("models",),
     "patient_sensitivity_multicycle_v3": ("models",),
     "patient_sensitivity_generalized": ("models",),
+    "patient_sensitivity_qspect_slopes": ("models",),
+    "patient_sensitivity_reference_comparison": ("models",),
     "patient_sensitivity_urine_target": ("models",),
     "patient_sensitivity_first_point_calibration": ("models",),
     "patient_sensitivity_urine_models": ("models",),

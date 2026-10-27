@@ -10,8 +10,10 @@ questions:
 3. M0--M9 models evaluated with leave-one-patient-out validation.
 
 All targets are urine-derived remaining body activities evaluated at the
-planar acquisition time.  No Q/SPECT activity, CT, ACCT or Q/SPECT-guided crop
-is used in this runner.
+planar acquisition time.  No Q/SPECT activity, CT or ACCT is used to define
+the target.  The planar counts are evaluated on two supports with the same
+analysis engine: the complete planar image and the longitudinal crop matched
+to the Q/SPECT coverage.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import argparse
 import csv
 import math
 from pathlib import Path
+import shutil
 from typing import Any, Dict, Mapping, Sequence
 
 import matplotlib
@@ -30,6 +33,7 @@ import numpy as np
 
 import figure_layout
 import patient_sensitivity_multicycle_v3 as v3
+import patient_sensitivity_qspect_slopes as slope_engine
 import patient_sensitivity_urine_target as urine
 import planar_total_counts_retention as retention
 
@@ -110,13 +114,94 @@ def _activity_metrics(
 def load_datasets(timepoint_count: int = 3) -> Dict[str, Dict[str, Any]]:
     """Load every configured urine dataset from its canonical patient folder."""
     datasets: Dict[str, Dict[str, Any]] = {}
-    for spec in DATASET_SPECS:
+    ordered_specs = sorted(
+        DATASET_SPECS,
+        key=lambda spec: figure_layout.patient_cycle_sort_key(
+            spec.patient_id, spec.cycle_id
+        ),
+    )
+    for spec in ordered_specs:
         if " copy" in str(spec.planar_dir.parent.name).lower():
             raise ValueError(f"Copy imaging directory is not allowed: {spec.planar_dir}")
         datasets[spec.patient_id] = urine.build_urine_dataset(
             spec, timepoint_count
         )
     return datasets
+
+
+def prepare_urine_reference_rows(
+    datasets: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Joindre la cible urinaire au meme tableau planaire que l'analyse Q/SPECT.
+
+    Le champ commun ``reference_activity_mbq`` est la seule difference donnee
+    au moteur de pente.  Les comptes, durees, corrections de temps mort,
+    fenetres et combinaisons de detecteurs sont donc strictement identiques.
+    """
+    references: dict[tuple[str, str, str], float] = {}
+    for dataset in datasets.values():
+        spec = dataset["spec"]
+        activity = np.asarray(dataset["reference_activity"], dtype=float)
+        for record, value in zip(dataset["records"], activity):
+            planar_datetime = record["planar_datetime"].strftime("%Y-%m-%d %H:%M:%S")
+            references[(spec.patient_id, spec.cycle_id, planar_datetime)] = float(value)
+
+    prepared: list[dict[str, Any]] = []
+    for source in slope_engine.load_master_table(slope_engine.DEFAULT_MASTER_TABLE):
+        key = (
+            str(source["patient_id"]),
+            str(source["cycle_id"]),
+            str(source["planar_datetime"]),
+        )
+        if key not in references:
+            continue
+        row = dict(source)
+        row["reference_activity_mbq"] = references[key]
+        prepared.append(row)
+    if not prepared:
+        raise ValueError("Aucune cible urinaire ne correspond a la table planaire")
+    return prepared
+
+
+def _remove_legacy_slope_artifacts(section_slope: Path) -> None:
+    """Retirer seulement les anciennes sorties remplacees par le moteur commun."""
+    legacy = [
+        section_slope / "pentes_J0_J2.csv",
+        section_slope / "predictions_intrapatient.csv",
+        section_slope / "transferts_interpatient_metriques.csv",
+        section_slope / "transferts_interpatient_MARE.png",
+    ]
+    for folder in ("AP_PA", "GM", "GM_globale"):
+        legacy.extend(
+            [
+                section_slope / folder / "construction_pente_J0_J2_photopeak.png",
+                section_slope / folder / "pentes_J0_J2_par_patient.png",
+                section_slope / folder / "04_general_scatter.png",
+            ]
+        )
+    for path in legacy:
+        if path.is_file():
+            path.unlink()
+
+
+def _remove_legacy_j0_artifacts(section_j0: Path) -> None:
+    """Retirer les anciennes sorties J0 qui repondaient a d'autres questions."""
+    legacy_directories = (
+        section_j0 / "5_ancienne_analyse_p11_p8",
+        section_j0 / "1_activites_reference",
+    )
+    legacy_files = (
+        section_j0 / "predictions_intrapatient.csv",
+        section_j0 / "sensibilites_J0_par_patient.png",
+        section_j0 / "transferts_interpatient_MARE.png",
+        section_j0 / "transferts_interpatient_metriques.csv",
+    )
+    for directory in legacy_directories:
+        if directory.is_dir():
+            shutil.rmtree(directory)
+    for path in legacy_files:
+        if path.is_file():
+            path.unlink()
 
 
 def _pair_directions(patient_ids: Sequence[str]) -> list[tuple[str, str]]:
@@ -313,77 +398,54 @@ def _combine_observations(
 def model_results(
     datasets: Mapping[str, Mapping[str, Any]],
 ) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]]]:
-    """Fit on two patients and evaluate unchanged on the third patient."""
+    """Run the shared Q/SPECT/urine model engine with urine targets."""
     metrics: list[Dict[str, Any]] = []
     predictions: list[Dict[str, Any]] = []
     patient_ids = tuple(datasets)
-    for test_patient in patient_ids:
-        training_patients = tuple(p for p in patient_ids if p != test_patient)
-        for mode in urine.MODE_ORDER:
-            training = _combine_observations(
-                [datasets[p] for p in training_patients], mode
+    for mode in urine.MODE_ORDER:
+        observations = {
+            patient: datasets[patient]["mode_observations"][mode]
+            for patient in patient_ids
+        }
+        for test_patient in patient_ids:
+            training_patients = tuple(
+                patient for patient in patient_ids if patient != test_patient
             )
-            test = datasets[test_patient]["mode_observations"][mode]
-            allowed = set(urine._mode_model_names(mode))
-            for model in v3.MODEL_ORDER:
-                base = {
-                    "test_patient": test_patient,
-                    "training_patients": "+".join(training_patients),
-                    "rate_mode": mode,
-                    "rate_mode_label": urine.MODE_SHORT_LABELS[mode].replace("\n", " "),
-                    "model": model,
-                    "model_label": v3.MODEL_LABELS[model],
-                    "n_train": len(training["records"]),
-                    "n_test": len(test["records"]),
-                }
-                if model not in allowed:
-                    metrics.append(
-                        {
-                            **base,
-                            "fit_status": "not_applicable",
-                            "fit_reason": "M5 requires a TEW measurement mode",
-                            "mare_percent": math.nan,
-                        }
-                    )
-                    continue
-                fit = v3.fit_model(model, training)
-                if fit["status"] != "fitted":
-                    metrics.append(
-                        {
-                            **base,
-                            "fit_status": fit["status"],
-                            "fit_reason": fit["reason"],
-                            "mare_percent": math.nan,
-                        }
-                    )
-                    continue
-                predicted_sensitivity = v3.predict_model(fit, test)
-                rates = np.asarray(test["measurement_rate"], dtype=float)
-                reference = np.asarray(test["reference_activity"], dtype=float)
-                predicted_activity = rates / predicted_sensitivity
-                metric = _activity_metrics(reference, predicted_activity)
+            result = v3.fit_and_evaluate(
+                training_patients,
+                (test_patient,),
+                observations,
+                split_id=f"patient_holdout_{test_patient}",
+                split_type="leave_one_patient_out",
+                split_label=f"{test_patient.upper()} entièrement exclu",
+                rate_mode=mode,
+                model_names=urine._mode_model_names(mode),
+                include_j0_personalized=True,
+                reference_name="activité corporelle dérivée des urines",
+            )
+            for row in result["metrics"]:
                 metrics.append(
                     {
-                        **base,
-                        "fit_status": "fitted",
-                        "fit_reason": "",
-                        **metric,
+                        **row,
+                        "test_patient": test_patient,
+                        "training_patients": "+".join(training_patients),
+                        "mare_percent": row.get("activity_mare_percent", math.nan),
+                        "bias_percent": row.get("activity_bias_percent", math.nan),
+                        "rmse_percent": row.get("activity_rmse_percent", math.nan),
+                        "maximum_absolute_error_percent": row.get(
+                            "maximum_activity_error_percent", math.nan
+                        ),
                     }
                 )
-                for index, record in enumerate(test["records"]):
-                    predictions.append(
-                        {
-                            **base,
-                            "timepoint": record["timepoint"],
-                            "hours_after_injection": record["hours_after_injection"],
-                            "reference_activity_mbq": float(reference[index]),
-                            "predicted_activity_mbq": float(predicted_activity[index]),
-                            "error_percent": float(
-                                100.0
-                                * (predicted_activity[index] / reference[index] - 1.0)
-                            ),
-                        }
-                    )
+            for row in result["predictions"]:
+                predictions.append(
+                    {
+                        **row,
+                        "test_patient": test_patient,
+                        "training_patients": "+".join(training_patients),
+                        "error_percent": row["activity_error_percent"],
+                    }
+                )
     return metrics, predictions
 
 
@@ -846,7 +908,11 @@ def plot_model_mare(
     models = [model for model in v3.MODEL_ORDER if model in urine._mode_model_names(mode)]
     matrix = np.full((len(patients), len(models)), np.nan)
     for row in rows:
-        if row["rate_mode"] != mode or row["fit_status"] != "fitted":
+        if (
+            row["rate_mode"] != mode
+            or row["fit_status"] != "fitted"
+            or row.get("metric_scope") != "combined_test"
+        ):
             continue
         matrix[patients.index(str(row["test_patient"])), models.index(str(row["model"]))] = float(row["mare_percent"])
     fig, axis = plt.subplots(figsize=(12.5, 4.8))
@@ -907,33 +973,42 @@ Les dossiers nommes 'copy' ne sont pas utilises comme source d'imagerie.
 
 1_sensibilite_J0
 ----------------
-Une sensibilite est calibree uniquement avec J0. J1 et J2 sont ensuite
-predits sans reajustement. Le sous-dossier 1_activites_reference contient
-aussi, pour chaque patient, les comptes photopeak, diffuse general et quatre
-fenetres en fonction de l'activite restante, en AP+PA et en GM pixel.
+Le meme moteur planaire que la section J0-J2 calcule S_J0 = R_J0/A_J0. La
+droite est donc definie uniquement par (0,0) et J0. Les acquisitions suivantes
+ne participent jamais a la calibration et servent seulement a mesurer l'erreur
+sur l'activite. Pour chacun des supports crop et complet, les sorties AP+PA,
+GM par pixel et GM globale contiennent les quatre fenetres, la synthese de
+l'erreur post-J0, les sensibilites J0 par cycle et leur tableau. Une calibration
+sur un seul point ne permet pas d'estimer une erreur-type de pente.
 
 2_sensibilite_J0_J2
 -------------------
-La pente C = S*A est ajustee a l'origine avec J0, J1 et J2, ou C represente
-les comptes totaux bruts utilises dans les figures comptes-activite. Aucune
-division par la duree d'acquisition n'est appliquee dans cette section. La performance
-intrapatient sur ces memes trois points est descriptive et optimiste. Les
-transferts vers un autre patient restent des tests sans reajustement.
-Les sous-dossiers AP_PA, GM et GM_globale montrent les trois points, la droite
-contrainte a l'origine, la pente et le R2. GM est calculee pixel par pixel,
-tandis que GM_globale vaut sqrt(somme(AP) * somme(PA)). La comparaison des
-pentes des quatre fenetres energetiques individuelles est separee dans les
-memes sous-dossiers sous forme de quatre panneaux. Chaque sous-dossier contient
-aussi quatre figures separees, une pour chaque fenetre energetique.
+Le meme moteur que pour la cible Q/SPECT ajuste R = S*A a l'origine sur les
+trois premiers points. Les comptes sont divises par la duree pour obtenir des
+cps, puis corriges par le facteur global de temps mort. Les noms de fichiers,
+fenetres, supports crop/complet et figures sont identiques entre les cibles
+urinaire et Q/SPECT. Seule la colonne d'activite de reference change. La
+performance intracycle sur les memes trois points est descriptive; les
+transferts cycle vers cycle sont sans reajustement.
+P11-juillet n'est pas inclus dans cette section, car les seules collectes de
+P11 sont rattachees a l'injection du 19 mai 2026. Aucune cible urinaire n'est
+disponible pour l'injection de juin/juillet.
 
 3_sensibilite_modeles
 ---------------------
-Pour chaque patient test, les modeles M0-M9 sont ajustes sur les deux autres
-patients puis verrouilles. Il s'agit d'une validation leave-one-patient-out,
-mais seulement trois patients sont disponibles; la comparaison de plusieurs
-modeles demeure exploratoire.
+Pour chaque patient test, M0, M0b et les modeles M1-M9 sont ajustes sur les
+deux autres patients puis verrouilles. M0 est la moyenne des sensibilites;
+M0b est la pente a l'origine R=S*A sur l'entrainement. La reference J0 utilise
+le premier point du cycle teste et est evaluee seulement sur les points
+suivants. Une figure dediee compare toutes les methodes sur ce meme sous-
+ensemble post-J0. Il s'agit d'une validation leave-one-patient-out pour les
+modeles appris, mais pas pour la reference personnalisee J0.
 
-Aucun CT, ACCT, Q/SPECT ou crop guide par Q/SPECT n'est utilise ici.
+Aucun CT, ACCT ni activite Q/SPECT n'est utilise pour definir la cible
+urinaire. Le dossier crop utilise toutefois le Q/SPECT pour definir la
+couverture longitudinale; il constitue une analyse de developpement et non un
+pipeline final autonome sans Q/SPECT. Pour la retention pancorporelle urinaire,
+le support complet demeure la comparaison physiquement la plus directe.
 """
 
 
@@ -944,104 +1019,55 @@ def run_generalized_urine_analysis(
     section_j0 = output_dir / "1_sensibilite_J0"
     section_slope = output_dir / "2_sensibilite_J0_J2"
     section_models = output_dir / "3_sensibilite_modeles"
-    reference_dir = section_j0 / "1_activites_reference"
-    for directory in (section_j0, section_slope, section_models, reference_dir):
+    for directory in (section_j0, section_slope, section_models):
         directory.mkdir(parents=True, exist_ok=True)
 
     datasets = load_datasets(3)
-    count_paths, count_results = _generate_reference_count_figures(reference_dir)
+    urine_slope_rows = prepare_urine_reference_rows(datasets)
 
-    j0_sensitivities, j0_intra, j0_transfer = j0_results(datasets)
-    _write_csv(section_j0 / "sensibilites_J0.csv", j0_sensitivities)
-    _write_csv(section_j0 / "predictions_intrapatient.csv", j0_intra)
-    _write_csv(section_j0 / "transferts_interpatient_metriques.csv", j0_transfer)
+    _remove_legacy_j0_artifacts(section_j0)
+    _remove_legacy_slope_artifacts(section_slope)
+    sensitivity_outputs = slope_engine.run_reference_sensitivity_sections(
+        urine_slope_rows,
+        output_dir,
+        reference_label="urinaire",
+        reference_description=(
+            "l'activite corporelle restante derivee des collectes urine/couches "
+            "au moment du planaire"
+        ),
+    )
+    j0_outputs = {
+        name: path
+        for name, path in sensitivity_outputs.items()
+        if name.startswith("j0_")
+    }
     j0_figures = [
-        plot_grouped_sensitivities(
-            j0_sensitivities,
-            "sensitivity_j0_cps_per_mbq",
-            "Sensibilité planaire calibrée uniquement à J0",
-            section_j0 / "sensibilites_J0_par_patient.png",
-        ),
-        plot_transfer_heatmaps(
-            j0_transfer,
-            J0_METHODS,
-            "Transfert interpatient de la sensibilité J0 — J1 et J2 évalués",
-            section_j0 / "transferts_interpatient_MARE.png",
-        ),
+        path for path in j0_outputs.values() if Path(path).suffix.lower() == ".png"
     ]
-
-    slopes, slope_intra, slope_transfer = slope_results(datasets, count_results)
-    window_slopes = energy_window_slope_rows(datasets, count_results)
-    _write_csv(section_slope / "pentes_J0_J2.csv", slopes)
-    _write_csv(section_slope / "pentes_fenetres_J0_J2.csv", window_slopes)
-    _write_csv(section_slope / "predictions_intrapatient.csv", slope_intra)
-    _write_csv(section_slope / "transferts_interpatient_metriques.csv", slope_transfer)
+    slope_outputs = {
+        name: path
+        for name, path in sensitivity_outputs.items()
+        if name.startswith("slope_")
+    }
     slope_figures = [
-        plot_j0_j2_photopeak_fits(
-            datasets,
-            count_results,
-            retention.COMBINATION_AP_PA,
-            "AP+PA",
-            section_slope / "AP_PA" / "construction_pente_J0_J2_photopeak.png",
-        ),
-        plot_j0_j2_photopeak_fits(
-            datasets,
-            count_results,
-            retention.COMBINATION_GM,
-            "GM pixel",
-            section_slope / "GM" / "construction_pente_J0_J2_photopeak.png",
-        ),
-        plot_j0_j2_photopeak_fits(
-            datasets,
-            count_results,
-            retention.COMBINATION_GM_GLOBAL,
-            "GM globale",
-            section_slope
-            / "GM_globale"
-            / "construction_pente_J0_J2_photopeak.png",
-        ),
-        plot_energy_window_slopes(
-            window_slopes,
-            retention.COMBINATION_AP_PA,
-            section_slope / "AP_PA" / "pentes_J0_J2_par_patient.png",
-        ),
-        plot_energy_window_slopes(
-            window_slopes,
-            retention.COMBINATION_GM,
-            section_slope / "GM" / "pentes_J0_J2_par_patient.png",
-        ),
-        plot_energy_window_slopes(
-            window_slopes,
-            retention.COMBINATION_GM_GLOBAL,
-            section_slope / "GM_globale" / "pentes_J0_J2_par_patient.png",
-        ),
-        plot_transfer_heatmaps(
-            slope_transfer,
-            SLOPE_METHODS,
-            "Transfert interpatient de la pente J0–J2",
-            section_slope / "transferts_interpatient_MARE.png",
-        ),
+        path for path in slope_outputs.values() if Path(path).suffix.lower() == ".png"
     ]
-    for combination, folder_name in (
-        (retention.COMBINATION_AP_PA, "AP_PA"),
-        (retention.COMBINATION_GM, "GM"),
-        (retention.COMBINATION_GM_GLOBAL, "GM_globale"),
-    ):
-        for count_field, window_label, filename in ENERGY_WINDOW_FIGURES:
-            slope_figures.append(
-                plot_j0_j2_single_window_fits(
-                    datasets,
-                    count_results,
-                    combination,
-                    count_field,
-                    window_label,
-                    section_slope / folder_name / filename,
-                )
-            )
 
     model_metrics, model_predictions = model_results(datasets)
     _write_csv(section_models / "modeles_M0_M9_metriques.csv", model_metrics)
     _write_csv(section_models / "modeles_M0_M9_predictions.csv", model_predictions)
+    _write_csv(section_models / "modeles_sensibilite_metriques.csv", model_metrics)
+    _write_csv(
+        section_models / "modeles_sensibilite_predictions.csv", model_predictions
+    )
+    methodology_path = section_models / "modeles_methodologie_commune.txt"
+    methodology_path.write_text(
+        v3.build_model_methodology_document(
+            reference_symbol="A_urine",
+            reference_label="bilan urinaire",
+        ),
+        encoding="utf-8",
+    )
     model_figures = [
         plot_model_mare(
             model_metrics,
@@ -1050,15 +1076,27 @@ def run_generalized_urine_analysis(
         )
         for mode in urine.MODE_ORDER
     ]
+    post_j0_dir = section_models / "post_J0_comparison"
+    model_figures.extend(
+        v3.plot_post_j0_model_mare(
+            model_metrics,
+            mode,
+            post_j0_dir / f"post_J0_MARE_{mode}.png",
+            model_names=urine._mode_model_names(mode),
+            title_prefix="Cible urine — comparaison après J0",
+        )
+        for mode in urine.MODE_ORDER
+    )
 
     readme = output_dir / "README.txt"
     readme.write_text(build_readme(), encoding="utf-8")
     return {
         "datasets": datasets,
-        "count_figures": count_paths,
+        "count_figures": {},
         "j0_figures": j0_figures,
         "slope_figures": slope_figures,
         "model_figures": model_figures,
+        "model_methodology": methodology_path,
         "output_dir": output_dir,
         "readme": readme,
     }
