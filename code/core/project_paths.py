@@ -3,6 +3,7 @@
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = SOURCE_ROOT.parent
 DATA_ROOT = PROJECT_ROOT / "Data"
 FIG_ROOT = PROJECT_ROOT / "fig"

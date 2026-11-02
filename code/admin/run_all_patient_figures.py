@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.project_paths import PROJECT_ROOT
+from core.project_paths import SOURCE_ROOT
 from typing import Iterable, List
 
 from core import figure_layout
@@ -25,7 +25,7 @@ from core import study_layout
 from admin.analysis_catalog import cycle_analyses
 
 
-PROJECT_DIR = PROJECT_ROOT
+PROJECT_DIR = SOURCE_ROOT
 RUN_REPORT_DIR = figure_layout.FIG_ROOT / "admin" / "run_reports"
 
 

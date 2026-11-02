@@ -1,12 +1,12 @@
 from admin import analysis_catalog
-from core.project_paths import PROJECT_ROOT
+from core.project_paths import SOURCE_ROOT
 
 
 def test_registered_source_paths_exist():
     missing = [
         spec.path
         for spec in analysis_catalog.ANALYSES
-        if not (PROJECT_ROOT / spec.path).exists()
+        if not (SOURCE_ROOT / spec.path).exists()
     ]
     assert missing == []
 
@@ -35,8 +35,8 @@ def test_markdown_describes_current_legacy_replacements():
 
 def test_catalog_covers_all_project_scripts():
     discovered = {
-        path.relative_to(PROJECT_ROOT).as_posix()
-        for path in PROJECT_ROOT.rglob("*.py")
+        path.relative_to(SOURCE_ROOT).as_posix()
+        for path in SOURCE_ROOT.rglob("*.py")
         if not any(part in {".venv", "tests", "archive"} for part in path.parts)
         and path.name != "__init__.py"
     }

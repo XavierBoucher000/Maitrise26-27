@@ -11,7 +11,7 @@ Usage:
 
 from pathlib import Path
 
-from core.project_paths import PROJECT_ROOT
+from core.project_paths import DATA_ROOT
 import sys
 
 import matplotlib.pyplot as plt
@@ -60,9 +60,7 @@ def load_qspect_volume_raw(series_dir: Path) -> np.ndarray:
 # À MODIFIER SELON VOS BESOINS
 # ---------------------------------------------------------------------------
 # Dossier parent contenant toutes les séries (ne change pas d'un jour à l'autre)
-BASE_DIR = Path(
-    "/Users/xavierboucher/Desktop/maitrise/2.0/Code/Data/p8/2026-06__Studies"
-)
+BASE_DIR = DATA_ROOT / "p8" / "2026-06__Studies"
 
 # Nom COMPLET du dossier de la série à visualiser (collez-le tel quel à
 # chaque fois — c'est le seul paramètre à changer).
