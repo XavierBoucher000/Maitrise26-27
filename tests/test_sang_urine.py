@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import sang_urine
+from retention_excretion import sang_urine
 
 
 def test_source_csv_parser_finds_expected_measurements():

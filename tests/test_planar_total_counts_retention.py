@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import planar_total_counts_retention as analysis
+import retention_excretion.planar_total_counts_retention as analysis
 
 
 def _image(window, view, counts, pixels=None):

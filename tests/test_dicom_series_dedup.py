@@ -5,7 +5,7 @@ import pydicom
 from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
-import dicom_series_dedup
+from core import dicom_series_dedup
 
 
 def _write_series(

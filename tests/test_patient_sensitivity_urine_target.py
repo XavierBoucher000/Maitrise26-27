@@ -1,7 +1,7 @@
 import numpy as np
 
-import patient_sensitivity_multicycle_v3 as v3
-import patient_sensitivity_urine_target as urine
+import models.engines.patient_sensitivity_multicycle_v3 as v3
+import models.legacy.patient_sensitivity_urine_target as urine
 
 
 def _observation(rate_scale: float = 1.0):

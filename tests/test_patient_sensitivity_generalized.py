@@ -1,7 +1,7 @@
 from pathlib import Path
 
-import patient_sensitivity_generalized as generalized
-import patient_sensitivity_multicycle_v3 as v3
+import models.patient_sensitivity_generalized as generalized
+import models.engines.patient_sensitivity_multicycle_v3 as v3
 
 
 def _spec(key, patient, cycle):

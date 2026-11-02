@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-import figure_layout
+from core import figure_layout
 
 
 def test_patient_cycle_dir_uses_script_patient_cycle_hierarchy():

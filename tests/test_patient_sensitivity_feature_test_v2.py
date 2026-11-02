@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from pathlib import Path
 
-import patient_sensitivity_feature_test_v2 as feature_test
+import models.legacy.patient_sensitivity_feature_test_v2 as feature_test
 
 
 def test_organized_output_dir_uses_script_patient_cycle_hierarchy():

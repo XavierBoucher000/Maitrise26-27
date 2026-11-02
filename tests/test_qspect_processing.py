@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import qspect_processing
+from core import qspect_processing
 
 
 def test_primary_qspect_description_excludes_derived_and_alternate_series():

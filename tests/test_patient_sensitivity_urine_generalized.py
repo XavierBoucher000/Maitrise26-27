@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-import patient_sensitivity_urine_generalized as generalized
-import patient_sensitivity_urine_target as urine
+import models.patient_sensitivity_urine_generalized as generalized
+import models.legacy.patient_sensitivity_urine_target as urine
 
 
 def test_zero_origin_slope_recovers_known_sensitivity():

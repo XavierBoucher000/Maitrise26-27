@@ -1,6 +1,6 @@
 from datetime import datetime
 
-import acquisition_timeline as timeline
+import quality_control.acquisition_timeline as timeline
 
 
 def test_parse_dicom_date_time_preserves_fractional_seconds():

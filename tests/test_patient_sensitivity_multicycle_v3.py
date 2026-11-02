@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import patient_sensitivity_multicycle_v3 as v3
+import models.engines.patient_sensitivity_multicycle_v3 as v3
 
 
 def _synthetic_observations():

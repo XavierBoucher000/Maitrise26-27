@@ -1,8 +1,8 @@
 import pytest
 from pathlib import Path
 
-import run_all_patient_figures as runner
-import study_layout
+import admin.run_all_patient_figures as runner
+from core import study_layout
 
 
 def test_selected_analyses_preserves_registry_order():

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import study_layout
+from core import study_layout
 
 
 def test_discover_cycles_pairs_qspect_and_wbp_folders(tmp_path):

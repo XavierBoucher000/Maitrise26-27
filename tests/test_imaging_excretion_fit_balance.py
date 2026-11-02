@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-import imaging_excretion_fit_balance as iefb
-import planar_excretion_fit_balance as pefb
-import sang_urine
+import retention_excretion.imaging_excretion_fit_balance as iefb
+import retention_excretion.planar_excretion_fit_balance as pefb
+from retention_excretion import sang_urine
 
 
 def _inputs():

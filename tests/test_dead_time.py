@@ -9,12 +9,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dead_time import (
+from corrections.dead_time.dead_time import (
     PARALYZABLE_DOMAIN_LIMIT,
     correct_dead_time,
     correct_dead_time_dataframe,
 )
-from planar_processing import average_wide_spectrum_rate
+from core.planar_processing import average_wide_spectrum_rate
 
 
 def test_zero_wide_rate_gives_dtcf_one():

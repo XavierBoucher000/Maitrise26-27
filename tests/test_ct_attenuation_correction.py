@@ -3,11 +3,11 @@ import inspect
 import numpy as np
 import pytest
 
-import ct_attenuation_correction as ctac
-import planar_qspect_crop
-import attenuation_correction
-import compare_crop_methods
-import crop_excluded_counts_test
+import corrections.ct_attenuation.ct_attenuation_correction as ctac
+from crop_alignment import planar_qspect_crop
+from corrections.ct_attenuation import attenuation_correction
+from crop_alignment import compare_crop_methods
+from crop_alignment import crop_excluded_counts_test
 
 
 def test_catphan_t2_is_the_shared_default_ct_conversion():

@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-import excretion_calibration_test
-import sang_urine
+from retention_excretion import excretion_calibration_test
+from retention_excretion import sang_urine
 
 
 def _inputs():

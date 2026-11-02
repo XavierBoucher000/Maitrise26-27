@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import planar_qspect_profile_crop as profile_crop
+import crop_alignment.planar_qspect_profile_crop as profile_crop
 
 
 def test_shared_profile_crop_resolver_requires_complete_pairs():
